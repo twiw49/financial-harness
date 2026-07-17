@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "defaultMode": "auto",
+    "allow": [
+      "mcp__hyean__preflight",
+      "mcp__hyean__get_plan",
+      "mcp__hyean__get_reference",
+      "mcp__hyean__call_api",
+      "mcp__hyean__call_api_batch",
+      "mcp__hyean__log_run",
+      "Bash(python3 *)",
+      "Bash(mkdir *)",
+      "Bash(echo *)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(bash .claude/skills/financial-harness/scripts/*)",
+      "Bash(open *)",
+      "WebFetch(*)",
+      "WebSearch(*)",
+      "Read(*)",
+      "Write(reports/**)",
+      "Write(watchlist/**)",
+      "Edit(reports/**)",
+      "Edit(watchlist/**)",
+      "Agent(*)"
+    ]
+  },
+  "env": {
+    "MAX_MCP_OUTPUT_TOKENS": "60000"
+  }
+}

@@ -1,0 +1,4 @@
+.env
+_workspace*/
+reports/
+scripts/__pycache__/
