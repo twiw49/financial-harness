@@ -40,7 +40,8 @@ CI/헤드리스: `claude mcp add --transport http hyean https://api.hyean.io/mcp
 1. **preflight** — `mcp__hyean__preflight` 1콜: 크레딧 잔량(<30이면 §0 경계 규약대로 사용자 경고)·api_status·버전. 배치(여러 보고서) 실행 시 매 보고서 시작 전 재확인.
 2. **런 격리** — `reports/` 스캔 → 다음 번호 → `REPORT_START=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)` → `mkdir -p reports/{NNN}_{이름}_{YYYYMMDD}/_workspace` → `.report_start`에 타임스탬프 고정. **루트 `_workspace/`·루트 `index.html` 생성 금지.** 스캔에서 **동일 대상·동일 날짜 런이 이미 보이면** 새 수집 전에 1줄 고지 + 재사용/신규 여부 확인 1회 (동일 요청 재실행 크레딧 절약).
 3. **플랜 수령** — `mcp__hyean__get_plan(request_type, context)` 1콜.
-   - request_type: `single_stock | compare | sector | macro | screening | deep_screening | portfolio | quant | industry_report | watchlist_brief | custom`
+   - request_type: `single_stock | compare | sector | macro | screening | deep_screening | portfolio | quant | industry_report | watchlist_brief | event_interpretation | dd | custom`
+   - 라우팅 힌트: 공시 1건 해석("이 유상증자 무슨 의미야")=`event_interpretation` · 신뢰/리스크 실사("믿어도 되나", 목표가 없음)=`dd` · 둘 다 기업 전체 밸류에이션 요청이면 `single_stock`.
    - context: `{companies: [{name, corp_code?}], focus?, depth?, credits_remaining(preflight값), notes?}`
    - 산출물 Write **3종 전부 의무**: `plan_md` → `$RUN_DIR/_workspace/PLAN.md` · `agents[].brief_md` → `$RUN_DIR/agents/{name}.md` · `validation_checklist_md` → `_workspace/VALIDATION.md`. **fast-path로 brief를 프롬프트에 인라인하더라도 agents/{name}.md 저장은 생략 금지** — finalize 스냅샷·채점·재현성이 이 파일을 요구 (002 회귀: 미저장 → 에이전트 설계 채점 붕괴).
 4. **서브에이전트 병렬 발사** — PLAN.md의 T1~T6 필수 턴 시퀀스대로 `general-purpose` + brief 인라인 + 런 컨텍스트(RUN_DIR 절대경로). ∥ 묶음은 반드시 한 메시지에 동시 호출. 서브에이전트는 `mcp__hyean__call_api(_batch)`·`mcp__hyean__get_reference`·WebSearch를 사용. **`.claude/agents/` 레지스트리 절대 경유 금지.**
@@ -66,7 +67,7 @@ CI/헤드리스: `claude mcp add --transport http hyean https://api.hyean.io/mcp
 
 ## 5. 참고
 
-- request_type 11종: §2.3 목록. 새 형태 요청은 `custom`으로 받아 PLAN 골격 위에 즉석 설계.
+- request_type 13종: §2.3 목록. 새 형태 요청은 `custom`으로 받아 PLAN 골격 위에 즉석 설계.
 - `get_reference` 문서 9종: `analysis-quickcard · analysis-framework · hyean-api-guide · api-reference · report-template · web-search-strategy · external-data-sources · multi-company-framework · devils-advocate-guide` (+`section` 파라미터로 헤딩 슬라이스).
 - 로컬 잔류 파일: `references/design-cheatsheet.md`(report-writer 필독 — 111KB design-kit 통독 금지), `templates/design-kit.html`, `scripts/`(assemble_report·expand_citations·report_quality_check·finalize_run).
 - 하네스 구축/확장 메타 워크플로우는 서비스 저장소 `docs/harness-references/`로 이동 (제품 배포 대상 아님).
