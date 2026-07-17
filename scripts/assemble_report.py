@@ -34,9 +34,13 @@ def extract_blocks(kit_html: str):
     """design-kit.html에서 <style>…</style>와 모든 <script>…</script>(CDN 제외 인라인) 추출."""
     style_m = re.search(r"<style>.*?</style>", kit_html, re.S)
     style = style_m.group(0) if style_m else ""
-    # 인라인 script (src= 없는 것)만
+    # 인라인 script (src= 없는 것)만 — 단, <style> 블록을 먼저 제거하고 검색한다.
+    # design-kit의 CSS 주석에 리터럴 "<script>" 텍스트가 있어(사용법 안내), 이를 그대로
+    # 검색하면 non-greedy 매칭이 주석의 <script>부터 본문 첫 실제 </script>까지(=CSS 사본+
+    # </head><body>+데모 전체)를 한 덩어리로 삼켜 매 보고서에 죽은 블록이 주입된다.
+    kit_no_style = re.sub(r"<style>.*?</style>", "", kit_html, flags=re.S)
     scripts = []
-    for m in re.finditer(r"<script>(.*?)</script>", kit_html, re.S):
+    for m in re.finditer(r"<script>(.*?)</script>", kit_no_style, re.S):
         scripts.append(f"<script>{m.group(1)}</script>")
     # Chart.js CDN
     cdn_m = re.search(r'<script src="[^"]*chart\.js[^"]*"></script>', kit_html)
