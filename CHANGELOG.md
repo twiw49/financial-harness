@@ -2,6 +2,16 @@
 
 규약: 변경 요약을 최신순으로 기록. 동작 변경은 **[BREAKING]**, 문서는 **[DOC]**, 수정은 **[FIX]**.
 
+## v3.1.3 (2026-07-18) — 백테스트 known-시점 2단계 간소화 + 정정 리스크셋 restatement_events 전환 (pit 의존 소멸)
+
+known-시점 판정에서 **② pit original 앵커를 삭제**해 ①`known_from` → ③법정 lag **2단계**로 축소하고, 정정 리스크셋 소스를 pit `generation='restated'`에서 `restatement_events.parquet`으로 전환. 데이터 의존이 `pit_universe_snapshot`을 잃어 **factor_zoo·survivorship_free·restatement_events·prices 4종**으로 정리(look-ahead 판정에 pit 불필요 → 모드 B 기본 다운로드 25cr 절감). `scripts/backtest_scaffold.py`만 변경.
+
+- **[BREAKING] known-시점 2단계 판정** — ① 팩터 행 `known_from`(1순위) → ③ 부재/null 셀만 period_type 법정 lag. 종전(v3.1.2)의 ② pit original 앵커 제거. 근거(실측): `known_from`이 annual 97.5%·ttm 99.9%·quarterly 99.7%를 커버하고, `known_from` null 셀(=collect.reports에 원본 부재)은 같은 원천의 pit에도 대부분 부재 → ②의 실질 기여 ≈ 0. **③ 유지 근거**: 잔여 null 셀을 드롭하면 보고서 미수집 기업(상폐 계열 편중)이 조용히 빠져 생존편향이 뒷문으로 재유입 — 보수적 lag가 정직.
+- **[BREAKING] 정정 리스크셋 = restatement_events.parquet** — `restated_value_risk_cells`의 소스를 pit `generation='restated'`에서 `restatement_events`(전 행이 non-original 정정 이벤트 — value_change/preliminary/restatement/sign_only, 'original' revision_type 부재)의 corp×period_end 집합으로 전환. **교차확인(실물 datasets)**: pit-restated (corp,pe) 집합 10,736이 restatement_events 집합 66,513의 **완전 부분집합**(누락 0) — v3.1.3은 v3.1.2 리스크 셀을 하나도 잃지 않으면서 더 보수적(over-flag = 안전 방향). 차이 55,777은 value_change/sign_only 재제출 정정 + preliminary(pit이 별도 세대로 분리하던 것).
+- **[BREAKING] 구버전 8컬럼 factor_zoo 지원 종료** — `known_from` 컬럼 부재 시 침묵 하위호환 대신 **경고(stderr) + 전량 ③ 법정 lag 처리** + 재다운로드 안내. ② 폴백 경로가 사라져 known-시점이 전량 보수적 lag가 됨을 명시(침묵 금지).
+- **[COMPAT] gates 필드명 전부 유지** — `known_from_cells`(①)·`fallback_lag_cells`(③)·`anchor_coverage_pct`(분자=① `known_from`)·`restated_value_risk_cells`(restatement_events 기준)·`lookahead_violations`(=0 의무)·`forward_signal_rows_dropped`. 제거는 ② 내부 카운터(`anchor_cells`)·pit 로드/앵커 코드·콘솔 출력의 `anchor=` 토큰뿐.
+- forward 드롭(`period_type=='forward'`)·정정 리스크 게이트(`exclude_restated`)·상폐 청산·look-ahead 자기검증(=0) 유지. config 스키마·results.json 게이트 키 불변.
+
 ## v3.1.2 (2026-07-18) — 백테스트 known_from 컬럼 1순위 소비 (factor_zoo v2)
 
 파이프라인 근본수정 반영: `factor_zoo.parquet`에 `known_from`(원본 정기보고서 제출일, string 'YYYY-MM-DD'/null) 컬럼 내장(실측 커버리지 annual 97.5%·ttm 99.9%·quarterly 99.7%·forward=의도적 NULL). `scripts/backtest_scaffold.py`만 변경.

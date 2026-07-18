@@ -40,7 +40,7 @@ def load_config(run_dir: Path) -> dict:
 def load_datasets(run_dir: Path) -> dict:
     base = run_dir / "_workspace" / "00_raw" / "datasets"
     return {k: (pd.read_parquet(base / f"{k}.parquet") if (base / f"{k}.parquet").exists() else None)
-            for k in ("factor_zoo", "pit_universe_snapshot", "survivorship_free_universe")}
+            for k in ("factor_zoo", "survivorship_free_universe", "restatement_events")}
 
 
 def load_prices(run_dir: Path) -> dict:
@@ -87,38 +87,41 @@ def universe_at(surv: pd.DataFrame, index_name: str, t) -> set:
     return set(snap["corp_code"].dropna())
 
 
-# ── 시그널 (PIT look-ahead 게이트) ─────────────────────────────────────────────
-def build_pit_maps(pit):
-    """pit → (anchor, restated).
-    anchor=(corp,period_end)→min(as_of_from) over generation=='original' (원본 제출일=값이 처음 알려진 날).
-    restated={(corp,period_end): generation=='restated' 존재}.
-    ★preliminary는 앵커로 쓰지 않는다 — 잠정공시 값≠최종 팩터 입력이라 이른 날짜 차용=미세 look-ahead."""
-    if pit is None:
-        return {}, set()
-    df = pd.DataFrame({
-        "corp": pit["corp_code"].values,
-        "pe": pd.to_datetime(pit["period_end"], errors="coerce").dt.strftime("%Y-%m-%d").values,
-        "af": pd.to_datetime(pit["as_of_from"], errors="coerce").values,
-        "gen": pit["generation"].astype(str).values,
-    })
-    orig = df[(df["gen"] == "original") & df["af"].notna() & df["pe"].notna()]
-    anchor = dict(orig.groupby(["corp", "pe"])["af"].min().items())   # {(corp,pe): min as_of_from}
-    rest = df[(df["gen"] == "restated") & df["pe"].notna()]
-    return anchor, set(zip(rest["corp"], rest["pe"]))
+# ── 시그널 (look-ahead 게이트) ─────────────────────────────────────────────────
+def build_restated_set(restatement_events):
+    """restatement_events → 정정 리스크셋 {(corp, period_end_str)}.
+    restatement_events.parquet은 전 행이 non-original 정정 이벤트(value_change/preliminary/restatement/
+    sign_only — 'original' revision_type 없음)라 별도 필터 없이 corp×period_end 집합이 곧 리스크셋.
+    factor_zoo는 최신 세대 값이므로, 값이 정정된 (corp,기간)의 셀을 원본 제출일에 쓰면 미세 누출 →
+    정직 고지용 카운트(config exclude_restated로 제외 가능)."""
+    if restatement_events is None:
+        return set()
+    pe = pd.to_datetime(restatement_events["period_end"], errors="coerce").dt.strftime("%Y-%m-%d")
+    df = pd.DataFrame({"corp": restatement_events["corp_code"].values, "pe": pe.values})
+    df = df[df["pe"].notna()]
+    return set(zip(df["corp"], df["pe"]))
 
 
-def build_signal_index(factor_zoo, pit_anchor, pit_restated, item_ids, consol, period_type):
+def build_signal_index(factor_zoo, restated_set, item_ids, consol, period_type):
     """시그널 항목별: corp→[(pe, pe_str, value, known_ts, source, is_restated)] pe desc. + forward 드롭 수.
-    known_ts 3단계: ① 팩터 행 known_from 컬럼(factor_zoo v2, 원본 정기보고서 제출일) ② pit original 앵커
-    ③ period_type 법정 lag. 구버전 8컬럼 parquet은 known_from 부재 → ②/③로 하위호환.
+    known_ts 2단계: ① 팩터 행 known_from 컬럼(factor_zoo v2, 원본 정기보고서 제출일, 1순위)
+    ③ 부재/null이면 period_type 법정 lag 폴백. (v3.1.3: ② pit original 앵커 삭제 — known_from이 97.5~99.9%를
+    커버하고 null 셀은 같은 원천의 pit에도 대부분 부재라 ②의 실질 기여 ≈ 0 → pit 의존 소멸.)
+    ★③ 유지: known_from null 셀을 드롭하면 보고서 미수집 기업(상폐 계열 편중)이 조용히 빠져 생존편향이
+    뒷문으로 재유입 — 보수적 lag가 정직.
     forward(모델 최신 산출=vintage 아님)는 컬럼이 NULL이어도 1차 드롭."""
     sig = factor_zoo[(factor_zoo["item_id"].isin(item_ids)) & (factor_zoo["consol"] == consol)].copy()
     forward_dropped = int((sig["period_type"] == "forward").sum())
     sig = sig[(sig["period_type"] != "forward") & (sig["period_type"] == period_type)].copy()
     sig["pe"] = pd.to_datetime(sig["period_end"], errors="coerce")
-    has_kf = "known_from" in sig.columns          # 구버전(8컬럼) 하위호환 분기
+    has_kf = "known_from" in sig.columns
     if has_kf:
         sig["kf"] = pd.to_datetime(sig["known_from"], errors="coerce")
+    else:                                          # 구버전 8컬럼 parquet 지원 종료 — 침묵 금지
+        print("⚠️  factor_zoo에 known_from 컬럼 없음 (구버전 8컬럼 parquet, 지원 종료). "
+              "known-시점을 전량 법정 lag(③)로 처리 — 부정확·보수적입니다. "
+              "최신 factor_zoo(v2)를 재다운로드하세요: /api/datasets/factor_zoo/download",
+              file=sys.stderr)
     lag = pd.Timedelta(days=LEGAL_LAG.get(period_type, 90))
     idx = {}
     for item in item_ids:
@@ -136,13 +139,9 @@ def build_signal_index(factor_zoo, pit_anchor, pit_restated, item_ids, consol, p
                 ps = pe.strftime("%Y-%m-%d")
                 if pd.notna(kf):                              # ① 팩터 행 known_from (1순위)
                     kt, source = kf, "known_from"
-                else:
-                    a = pit_anchor.get((cc, ps))
-                    if a is not None:                         # ② pit original 앵커
-                        kt, source = a, "anchor"
-                    else:                                     # ③ 법정 lag
-                        kt, source = pe + lag, "lag"
-                cells.append((pe, ps, val, kt, source, (cc, ps) in pit_restated))
+                else:                                         # ③ 법정 lag
+                    kt, source = pe + lag, "lag"
+                cells.append((pe, ps, val, kt, source, (cc, ps) in restated_set))
             by_corp[cc] = cells
         idx[item] = by_corp
     return idx, forward_dropped
@@ -150,7 +149,7 @@ def build_signal_index(factor_zoo, pit_anchor, pit_restated, item_ids, consol, p
 
 def signal_at(cells, t, exclude_restated):
     """(corp cells, t) → t 시점 알려졌던 최신 period_end 값. exclude_restated면 정정 리스크 셀 드롭 후 다음 후보.
-    → (value, known_ts, source, pe_str, is_restated, excluded_pes). source ∈ {known_from, anchor, lag}."""
+    → (value, known_ts, source, pe_str, is_restated, excluded_pes). source ∈ {known_from, lag}."""
     excluded = []
     for pe, ps, val, kt, source, is_rest in cells:   # pe 내림차순
         if kt > t:
@@ -225,12 +224,12 @@ def main():
     if len(reb) < 2:
         sys.exit("리밸런스 날짜 < 2 — 가격 데이터/기간 확인")
     exclude_restated = bool(cfg["exclude_restated"])
-    pit_anchor, pit_restated = build_pit_maps(ds["pit_universe_snapshot"])
-    sig_idx, forward_dropped = build_signal_index(ds["factor_zoo"], pit_anchor, pit_restated,
+    restated_set = build_restated_set(ds["restatement_events"])
+    sig_idx, forward_dropped = build_signal_index(ds["factor_zoo"], restated_set,
                                                   [s["item_id"] for s in signals], consol, cfg["period_type"])
     fixed_codes = set(cfg["universe"].get("codes", [])) if cfg["universe"].get("type") == "codes" else None
 
-    lookahead_violations = known_from_cells = anchor_cells = fallback_cells = liquidations = skipped_periods = 0
+    lookahead_violations = known_from_cells = fallback_cells = liquidations = skipped_periods = 0
     used_restated: set = set()      # (corp, item, pe) 실제 사용된 정정 리스크 셀
     excluded_restated: set = set()  # (corp, item, pe) exclude_restated로 드롭된 셀
     prev_members: dict = {}         # quantile → set(corp)  (회전율 계산)
@@ -255,8 +254,6 @@ def main():
                     lookahead_violations += 1
                 if source == "known_from":               # ① 팩터 행 제출일
                     known_from_cells += 1
-                elif source == "anchor":                 # ② pit 앵커
-                    anchor_cells += 1
                 else:                                    # ③ 법정 lag
                     fallback_cells += 1
                 if is_rest:
@@ -325,8 +322,8 @@ def main():
         row["long_short"] = _r(sum(ls[j] for j in range(len(dates)) if m[j] and ls[j] is not None))
         per_year[str(int(y))] = row
 
-    date_anchored = known_from_cells + anchor_cells   # ①known_from + ②pit앵커 = 실제 날짜 앵커
-    total_known = date_anchored + fallback_cells       # ①+②+③ 전체 채택 셀
+    date_anchored = known_from_cells                  # ① known_from = 실제 날짜 앵커 (anchor_coverage_pct 분자)
+    total_known = date_anchored + fallback_cells       # ①+③ 전체 채택 셀
     out = run_dir / "_workspace" / "backtest"
     out.mkdir(parents=True, exist_ok=True)
     results = {
@@ -361,7 +358,7 @@ def main():
 
     cov = _r(date_anchored / total_known * 100, 1) if total_known else None
     print(f"✓ backtest 완료 — periods={len(periods)} lookahead_violations={lookahead_violations} "
-          f"anchor_coverage={cov}% (known_from={known_from_cells}/anchor={anchor_cells}/lag={fallback_cells}) "
+          f"anchor_coverage={cov}% (known_from={known_from_cells}/lag={fallback_cells}) "
           f"restated_risk={len(used_restated)} excluded={len(excluded_restated)} "
           f"forward_dropped={forward_dropped} liquidations={liquidations}")
     print(f"  results.json + timeseries.csv → {out}")
