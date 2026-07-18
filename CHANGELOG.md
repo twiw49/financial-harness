@@ -2,6 +2,15 @@
 
 규약: 변경 요약을 최신순으로 기록. 동작 변경은 **[BREAKING]**, 문서는 **[DOC]**, 수정은 **[FIX]**.
 
+## v3.1.1 (2026-07-18) — 백테스트 PIT 앵커 정밀화 (제출일 앵커·법정 lag·정정 리스크·forward 금지)
+
+`scripts/backtest_scaffold.py`만 변경. 근거 실측: pit↔factor_zoo canonical 겹침이 1종(DRV_DPS)뿐이라 종전 90d 단일 폴백이 지배적 → known-시점 판정을 "원본 제출일 앵커"로 교체.
+
+- **[FIX] 원본 제출일 앵커** — 팩터 셀 known-시점 = ① pit `generation=='original'`의 `(corp,period_end)→min(as_of_from)` 앵커 ② 부재 시 period_type별 법정 lag 폴백(annual 90 · quarterly/ttm/declared 45 · 미지 90). ★`preliminary` 세대는 앵커로 쓰지 않는다(잠정값≠최종 팩터 입력 — 이른 날짜 차용=미세 look-ahead). 종전 `as_of_until` 윈도우 판정 대체.
+- **[NEW] 정정 리스크 게이트** — pit `generation=='restated'`가 존재하는 `(corp,period_end)`를 리스크셋으로. 백테스트에 실제 사용된 팩터 셀 중 리스크 셀 수를 `gates.restated_value_risk_cells`로 카운트(factor_zoo=최신 세대 값이라 정정 기간을 원본 제출일에 쓰면 미세 누출 — 정직 고지). config `exclude_restated`(기본 `false`) `true`면 해당 셀 드롭 + `gates.restated_cells_excluded`.
+- **[NEW] forward 팩터 금지** — factor_zoo `period_type=='forward'`(모델 최신 산출=vintage 아님) 전량 드롭 + `gates.forward_signal_rows_dropped`. 드롭 후 signal 행 0이면 하드 에러로 중단.
+- **[NEW] gates** — `anchor_coverage_pct`(앵커/(앵커+폴백)) 추가. 기존 `lookahead_violations`(=0 의무)·`fallback_lag_cells` 필드명 유지.
+
 ## v3.1.0 (2026-07-18) — 5 카테고리 라우팅 정합 + 백테스트 로컬 실행 계층(Lv1)
 
 설계 SSOT: hyean `docs/HARNESS_WORKAREAS_20260718.md` (5축 전수조사 — 단일/비교/섹터/스크리닝/백테스트). 로더·스크립트만 변경, 서버 방법론(`mcp_content`)·API는 hyean 리포.

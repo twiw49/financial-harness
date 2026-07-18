@@ -19,10 +19,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-FALLBACK_LAG_DAYS = 90   # pit 미매칭 셀의 보수 폴백: period_end + 90일 ≤ t
 PPY = {"M": 12, "Q": 4}  # 리밸런스 빈도별 연간 기간 수
-DEFAULTS = {"consol": 1, "rebalance": "M", "quantiles": 5, "cost_bps": 30,
-            "period_type": "annual", "period": {}, "trials_note": ""}
+# 앵커(원본 제출일) 부재 시 period_type별 법정 lag 폴백(일). 미지 유형=90.
+LEGAL_LAG = {"annual": 90, "quarterly": 45, "ttm": 45, "declared": 45}
+DEFAULTS = {"consol": 1, "rebalance": "M", "quantiles": 5, "cost_bps": 30, "period_type": "annual",
+            "period": {}, "trials_note": "", "exclude_restated": False}
 
 
 # ── 입력 로드 ─────────────────────────────────────────────────────────────────
@@ -87,37 +88,66 @@ def universe_at(surv: pd.DataFrame, index_name: str, t) -> set:
 
 
 # ── 시그널 (PIT look-ahead 게이트) ─────────────────────────────────────────────
-def build_signal_index(factor_zoo, pit, item_ids, consol, period_type):
-    """시그널 항목별: corp→[(period_end desc, value)] + pit 윈도우 맵. 사전 계산해 t별 조회를 가볍게."""
-    fz = factor_zoo[(factor_zoo["item_id"].isin(item_ids)) & (factor_zoo["consol"] == consol)
-                    & (factor_zoo["period_type"] == period_type)].copy()
-    fz["pe"] = pd.to_datetime(fz["period_end"], errors="coerce")
+def build_pit_maps(pit):
+    """pit → (anchor, restated).
+    anchor=(corp,period_end)→min(as_of_from) over generation=='original' (원본 제출일=값이 처음 알려진 날).
+    restated={(corp,period_end): generation=='restated' 존재}.
+    ★preliminary는 앵커로 쓰지 않는다 — 잠정공시 값≠최종 팩터 입력이라 이른 날짜 차용=미세 look-ahead."""
+    if pit is None:
+        return {}, set()
+    df = pd.DataFrame({
+        "corp": pit["corp_code"].values,
+        "pe": pd.to_datetime(pit["period_end"], errors="coerce").dt.strftime("%Y-%m-%d").values,
+        "af": pd.to_datetime(pit["as_of_from"], errors="coerce").values,
+        "gen": pit["generation"].astype(str).values,
+    })
+    orig = df[(df["gen"] == "original") & df["af"].notna() & df["pe"].notna()]
+    anchor = dict(orig.groupby(["corp", "pe"])["af"].min().items())   # {(corp,pe): min as_of_from}
+    rest = df[(df["gen"] == "restated") & df["pe"].notna()]
+    return anchor, set(zip(rest["corp"], rest["pe"]))
+
+
+def build_signal_index(factor_zoo, pit_anchor, pit_restated, item_ids, consol, period_type):
+    """시그널 항목별: corp→[(pe, pe_str, value, known_ts, used_fallback, is_restated)] pe desc. + forward 드롭 수.
+    known_ts = ① 원본 제출일 앵커 ② period_type 법정 lag 폴백. forward(모델 최신 산출=vintage 아님)는 금지."""
+    sig = factor_zoo[(factor_zoo["item_id"].isin(item_ids)) & (factor_zoo["consol"] == consol)].copy()
+    forward_dropped = int((sig["period_type"] == "forward").sum())
+    sig = sig[(sig["period_type"] != "forward") & (sig["period_type"] == period_type)].copy()
+    sig["pe"] = pd.to_datetime(sig["period_end"], errors="coerce")
+    lag = pd.Timedelta(days=LEGAL_LAG.get(period_type, 90))
     idx = {}
     for item in item_ids:
-        sub = fz[fz["item_id"] == item].sort_values("pe", ascending=False)
-        by_corp = {cc: list(zip(g["pe"], g["value"].astype(float))) for cc, g in sub.groupby("corp_code")}
-        win: dict = {}   # (corp, period_end) → [(as_of_from, as_of_until)]  (canonical_id == item)
-        if pit is not None:
-            for _, r in pit[(pit["canonical_id"] == item) & (pit["consol"] == consol)].iterrows():
-                win.setdefault((r["corp_code"], str(r["period_end"])), []).append(
-                    (pd.to_datetime(r["as_of_from"], errors="coerce"), pd.to_datetime(r["as_of_until"], errors="coerce")))
-        idx[item] = {"by_corp": by_corp, "win": win}
-    return idx
+        sub = sig[sig["item_id"] == item].sort_values("pe", ascending=False)
+        if sub.empty:
+            sys.exit(f"signal '{item}' 행 0 (period_type={period_type} · forward 드롭 후) — "
+                     "forward 팩터는 모드 B 사용 불가 (모델 최신 산출, vintage 아님)")
+        by_corp = {}
+        for cc, g in sub.groupby("corp_code"):
+            cells = []
+            for pe, val in zip(g["pe"], g["value"].astype(float)):
+                if pd.isna(pe):
+                    continue
+                ps = pe.strftime("%Y-%m-%d")
+                a = pit_anchor.get((cc, ps))
+                kt, fb = (a, False) if a is not None else (pe + lag, True)
+                cells.append((pe, ps, val, kt, fb, (cc, ps) in pit_restated))
+            by_corp[cc] = cells
+        idx[item] = by_corp
+    return idx, forward_dropped
 
 
-def signal_at(sig, corp, t):
-    """(corp, t) 시그널 = t 시점 알려졌던 최신 period_end 값. → (value, known_time, used_fallback)."""
-    for pe, val in sig["by_corp"].get(corp, ()):   # period_end 내림차순
-        if pd.isna(pe):
+def signal_at(cells, t, exclude_restated):
+    """(corp cells, t) → t 시점 알려졌던 최신 period_end 값. exclude_restated면 정정 리스크 셀 드롭 후 다음 후보.
+    → (value, known_ts, used_fallback, pe_str, is_restated, excluded_pes)."""
+    excluded = []
+    for pe, ps, val, kt, fb, is_rest in cells:   # pe 내림차순
+        if kt > t:
+            continue                              # 아직 안 알려짐 (제외 아님)
+        if exclude_restated and is_rest:
+            excluded.append(ps)                   # 알려졌으나 정정 리스크 → 드롭, 다음 후보로
             continue
-        windows = sig["win"].get((corp, pe.strftime("%Y-%m-%d")))
-        if windows:                                # PIT 경로: as_of_from ≤ t < as_of_until
-            for af, au in windows:
-                if pd.notna(af) and af <= t and (pd.isna(au) or t < au):
-                    return val, af, False
-        elif pe + pd.Timedelta(days=FALLBACK_LAG_DAYS) <= t:   # 보수 폴백
-            return val, pe + pd.Timedelta(days=FALLBACK_LAG_DAYS), True
-    return None, None, False
+        return val, kt, fb, ps, is_rest, excluded
+    return None, None, False, None, False, excluded
 
 
 # ── 수익률 ────────────────────────────────────────────────────────────────────
@@ -182,13 +212,17 @@ def main():
     reb = rebalance_dates(prices, freq, start, end)
     if len(reb) < 2:
         sys.exit("리밸런스 날짜 < 2 — 가격 데이터/기간 확인")
-    sig_idx = build_signal_index(ds["factor_zoo"], ds["pit_universe_snapshot"],
-                                 [s["item_id"] for s in signals], consol, cfg["period_type"])
+    exclude_restated = bool(cfg["exclude_restated"])
+    pit_anchor, pit_restated = build_pit_maps(ds["pit_universe_snapshot"])
+    sig_idx, forward_dropped = build_signal_index(ds["factor_zoo"], pit_anchor, pit_restated,
+                                                  [s["item_id"] for s in signals], consol, cfg["period_type"])
     fixed_codes = set(cfg["universe"].get("codes", [])) if cfg["universe"].get("type") == "codes" else None
 
-    lookahead_violations = fallback_cells = liquidations = skipped_periods = 0
-    prev_members: dict = {}   # quantile → set(corp)  (회전율 계산)
-    periods = []              # [{form, realize, gross{q}, turnover{q}}]
+    lookahead_violations = anchor_cells = fallback_cells = liquidations = skipped_periods = 0
+    used_restated: set = set()      # (corp, item, pe) 실제 사용된 정정 리스크 셀
+    excluded_restated: set = set()  # (corp, item, pe) exclude_restated로 드롭된 셀
+    prev_members: dict = {}         # quantile → set(corp)  (회전율 계산)
+    periods = []                    # [{form, realize, gross{q}, turnover{q}}]
 
     for i in range(len(reb) - 1):
         t0, t1 = reb[i], reb[i + 1]
@@ -198,14 +232,20 @@ def main():
         for cc in corps:
             vals, ok = {}, True
             for s in signals:
-                v, known, fb = signal_at(sig_idx[s["item_id"]], cc, t0)
+                item = s["item_id"]
+                v, known, fb, ps, is_rest, excl = signal_at(sig_idx[item].get(cc, ()), t0, exclude_restated)
+                for ep in excl:
+                    excluded_restated.add((cc, item, ep))
                 if v is None:
                     ok = False
                     break
-                if known is not None and known > t0:     # 안전 자기검증 — 발생하면 안 됨
+                if known > t0:                           # 안전 자기검증 — 발생하면 안 됨
                     lookahead_violations += 1
+                anchor_cells += int(not fb)
                 fallback_cells += int(fb)
-                vals[s["item_id"]] = v
+                if is_rest:
+                    used_restated.add((cc, item, ps))
+                vals[item] = v
             if ok and period_return(prices.get(xwalk.get(cc, cc)), t0, t1)[0] is not None:
                 recs.append({"corp": cc, **vals})
         if len(recs) < Q:
@@ -276,6 +316,11 @@ def main():
         "gates": {
             "lookahead_violations": lookahead_violations,
             "fallback_lag_cells": fallback_cells,
+            "anchor_coverage_pct": _r(anchor_cells / (anchor_cells + fallback_cells) * 100, 2)
+                                   if (anchor_cells + fallback_cells) else None,
+            "restated_value_risk_cells": len(used_restated),
+            "restated_cells_excluded": len(excluded_restated),
+            "forward_signal_rows_dropped": forward_dropped,
             "delisted_included": bool(fixed_codes is None and surv is not None),
             "liquidation_assumption": f"상폐 종목은 상폐일 마지막 adj_close로 청산(−100% 강제 안 함). "
                                       f"보유기간 중 청산 {liquidations}건.",
@@ -296,8 +341,11 @@ def main():
     ts["cum_long_short"] = np.cumsum([x or 0 for x in ls])
     ts.to_csv(out / "timeseries.csv", index=False)
 
+    cov = _r(anchor_cells / (anchor_cells + fallback_cells) * 100, 1) if (anchor_cells + fallback_cells) else None
     print(f"✓ backtest 완료 — periods={len(periods)} lookahead_violations={lookahead_violations} "
-          f"fallback_cells={fallback_cells} liquidations={liquidations}")
+          f"anchor_coverage={cov}% (anchor={anchor_cells}/fallback={fallback_cells}) "
+          f"restated_risk={len(used_restated)} excluded={len(excluded_restated)} "
+          f"forward_dropped={forward_dropped} liquidations={liquidations}")
     print(f"  results.json + timeseries.csv → {out}")
 
 
