@@ -17,7 +17,7 @@ description: "한국 상장기업 주식/기업 분석 + 하네스 구성을 수
 3. 적합한 도구 안내 (다출처 리서치는 /deep-research 등). 금융 각도가 실재하면 재해석 제안
 4. 경계가 모호하면 1줄로 의도 확인
 
-**커버리지 경계 (스코프 안이어도 먼저 고지):** ① 금융업(은행·보험·증권·금융지주) = 재무제표 미지원 — 지배구조·공시·주가·뉴스만 ② 자유 백테스트(시점별 유니버스·팩터 패널) = 미지원, `/prices/bulk`(≤50종목) 가격 규칙 검증만 ③ 실시간(장중 시세·호가) = 미지원, prices=일별 EOD.
+**커버리지 경계 (스코프 안이어도 먼저 고지):** ① 금융업(은행·보험·증권·금융지주) = 재무제표 미지원 — 지배구조·공시·주가·뉴스만 ② 백테스트 = **서버 실행 미지원** — `quant` 유형이 `/datasets` 패널 다운로드 + **로컬 실행(`scripts/backtest_scaffold.py`)**으로 지원(시점별 유니버스·팩터 패널). ≤50종목 가격 규칙 검증은 `/prices/bulk`. **백테스트 요청은 스코프 밖이 아니다 — STOP 금지, quant로 라우팅.** ③ 실시간(장중 시세·호가) = 미지원, prices=일별 EOD.
 
 ## 0.5 명확화 게이트 (모호한 요청에만)
 
@@ -40,17 +40,35 @@ CI/헤드리스: `claude mcp add --transport http hyean https://api.hyean.io/mcp
 1. **preflight** — `mcp__hyean__preflight` 1콜: 크레딧 잔량(<30이면 §0 경계 규약대로 사용자 경고)·api_status·버전. 배치(여러 보고서) 실행 시 매 보고서 시작 전 재확인.
 2. **런 격리** — `reports/` 스캔 → 다음 번호 → `REPORT_START=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)` → `mkdir -p reports/{NNN}_{이름}_{YYYYMMDD}/_workspace` → `.report_start`에 타임스탬프 고정. **루트 `_workspace/`·루트 `index.html` 생성 금지.** 스캔에서 **동일 대상·동일 날짜 런이 이미 보이면** 새 수집 전에 1줄 고지 + 재사용/신규 여부 확인 1회 (동일 요청 재실행 크레딧 절약).
 3. **플랜 수령** — `mcp__hyean__get_plan(request_type, context)` 1콜.
-   - request_type: `single_stock | compare | sector | macro | screening | deep_screening | portfolio | quant | industry_report | watchlist_brief | event_interpretation | dd | custom`
-   - 라우팅 힌트: 공시 1건 해석("이 유상증자 무슨 의미야")=`event_interpretation` · 신뢰/리스크 실사("믿어도 되나", 목표가 없음)=`dd` · 둘 다 기업 전체 밸류에이션 요청이면 `single_stock`.
+   - request_type: **§2.3 결정표**로 분류 (13종). 복합 요청은 §2.3 체인 런 규정.
    - context: `{companies: [{name, corp_code?}], focus?, depth?, credits_remaining(preflight값), notes?}`
    - 산출물 Write **3종 전부 의무**: `plan_md` → `$RUN_DIR/_workspace/PLAN.md` · `agents[].brief_md` → `$RUN_DIR/agents/{name}.md` · `validation_checklist_md` → `_workspace/VALIDATION.md`. **fast-path로 brief를 프롬프트에 인라인하더라도 agents/{name}.md 저장은 생략 금지** — finalize 스냅샷·채점·재현성이 이 파일을 요구 (002 회귀: 미저장 → 에이전트 설계 채점 붕괴).
 4. **서브에이전트 병렬 발사** — PLAN.md의 T1~T6 필수 턴 시퀀스대로 `general-purpose` + brief 인라인 + 런 컨텍스트(RUN_DIR 절대경로). ∥ 묶음은 반드시 한 메시지에 동시 호출. 서브에이전트는 `mcp__hyean__call_api(_batch)`·`mcp__hyean__get_reference`·WebSearch를 사용. **`.claude/agents/` 레지스트리 절대 경유 금지.**
 5. **Data Gate** — 1턴 batched: `ls _workspace/00_raw/` + 각 JSON `json.loads` 유효성(절단 감지). PLAN.md의 게이트/Stop Trigger 표 적용.
 6. **분석 → 작성 → 검증** — PLAN.md 순서대로. 작성은 `scripts/assemble_report.py <RUN_DIR> --title "..."`로 조립(citation 토큰 자동 확장), **index.html 단일 산출물**(별도 보고서.md 없음). 검증은 VALIDATION.md 체크리스트를 1회 batched로 (수정 라운드 최대 1회).
-7. **finalize** — `bash .claude/skills/financial-harness/scripts/finalize_run.sh <RUN_DIR> "<request>" "<da_note>" "<notes>" "<agents>"` → 이어서 `mcp__hyean__log_run(run_id, request_type, credits_used, duration_s)` (비차단 — 실패해도 런은 성공).
+7. **finalize** — `bash .claude/skills/financial-harness/scripts/finalize_run.sh --request-type <type> <RUN_DIR> "<request>" "<da_note>" "<notes>" "<agents>"` (type=§2.3 결정표의 확정 유형 — ledger에 기록돼 채점기가 유형별 루브릭 적용; 체인 런은 **최종 유형**) → 이어서 `mcp__hyean__log_run(run_id, request_type, credits_used, duration_s)` (비차단 — 실패해도 런은 성공).
 8. **결과 보기 게이트** — `AskUserQuestion`: "완성된 보고서를 브라우저로 열까요?" [Chrome으로 열기 (권장) / 안 열기]. 열기 → `open -a "Google Chrome" "$(pwd)/<RUN_DIR>/index.html"` (실패 시 기본 브라우저 폴백). 배치는 마지막 1회만. headless면 경로만 출력.
 
 한 세션에서 여러 보고서 가능 — session.jsonl은 `.report_start` 타임스탬프 필터로 보고서별 구간 저장(finalize가 처리).
+
+## 2.3 요청 분류 결정표 (request_type 13종)
+
+요청 신호로 유형을 확정한다. 모호하면 오른쪽 판별 질문 1개로 좁힌 뒤 진행(불명확 시에만 §0.5 명확화 게이트).
+
+| 요청 신호 | request_type | 모호 시 판별 질문 |
+|---|---|---|
+| 종목 1개 + 밸류/전망/종합 | `single_stock` | — |
+| 공시·이벤트 **1건** 해석("이 공시 뭐야") | `event_interpretation` | 밸류 전체가 필요하면 `single_stock` |
+| 신뢰·리스크 실사, 목표가 없음 | `dd` | — |
+| 종목 2~20 나란히 비교 | `compare` | 산업 전체 맥락이 주면 `sector` |
+| 산업 내 유망 종목(Top pick) | `sector` | "산업 그 자체 구조"면 `industry_report` |
+| 산업 구조·경쟁(누가 크고 누가 진입) | `industry_report` | 종목 추천 요구 시 `sector` |
+| 조건식 발굴 | `screening` | 상위 종목 심층까지면 `deep_screening` |
+| 성과 통계·전략 아이디어 검증 | `quant` (모드 A: 사후 성과분해) | **규칙+기간+리밸런스가 명시**되면 **모드 B(백테스트)** — `/datasets` 다운로드 + `scripts/backtest_scaffold.py` 로컬 실행 |
+| 보유 목록 진단 / 정기 모니터링 / 지표 전망 | `portfolio` / `watchlist_brief` / `macro` | — |
+| 그 외 | `custom` | 가장 근접 유형 골격 참조 |
+
+**체인 런 (복합 요청)**: "반도체에서 저평가 찾아 비교"·"스크리닝 후 상위 심층"처럼 순차 동사 구조면 **선행 단계 유형으로 런 시작** → 단계 전환 시 ① 같은 `RUN_DIR` 유지 ② `get_plan(다음 유형)` 재호출 ③ **`00_raw` 재사용 — 동일 엔드포인트+파라미터 재호출 금지**(크레딧 이중 방지, 무가공 저장 계약과 정합) ④ 보고서는 **최종 index.html 1개** ⑤ `log_run`·finalize `--request-type`은 **최종 유형 1회**, `agents`에 `chain:screening>compare`처럼 표기.
 
 ## 3. 파일 규율 (불변 조항)
 

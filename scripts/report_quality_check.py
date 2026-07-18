@@ -307,6 +307,105 @@ def check_citation_coverage(report_dir: Path) -> dict:
 
 
 # ═══════════════════════════════════════
+# 2.5 Request-Type 감지 + TYPE_RUBRICS (유형별 필수 산출 루브릭)
+# ═══════════════════════════════════════
+# P5(측정 정합): 현행은 다기업·스크리닝 "감점 완화"만 있고 유형 필수 산출을 검사하지 않아
+# 비교·섹터 런이 구조적 저평가. 루브릭은 유형별 필수 산출을 검사해 실패 시 보고서 품질에서
+# 감점, 충족 시 현행 완화를 유지한다. ★구 런(ledger에 request_type 없음)에는 페널티 미적용 —
+# compare/sector/screening 페널티는 ledger request_type가 있을 때(신규 런)만, backtest는
+# results.json 존재가 트리거라 구 런에 절대 오탐하지 않음 → "구 런 점수 회귀 0" 보장.
+
+def _raw_stems(report_dir: Path) -> list:
+    """00_raw 직속 + 종목별 하위폴더 json stem 목록 (하위폴더는 {폴더}_{stem})."""
+    raw_dir = report_dir / "_workspace" / "00_raw"
+    if not raw_dir.exists():
+        return []
+    stems = [f.stem for f in raw_dir.glob("*.json")]
+    stems += [f"{sub.name}_{f.stem}" for sub in raw_dir.iterdir() if sub.is_dir() for f in sub.glob("*.json")]
+    return stems
+
+
+def detect_request_type(report_dir: Path):
+    """(request_type, source) 반환. ledger request_type 우선(과제 3 기록), 없으면 파일 휴리스틱 폴백.
+    source ∈ {'ledger','heuristic','none'} — 페널티는 'ledger'일 때만 적용(구 런 회귀 0)."""
+    ledger = report_dir / "_workspace" / "CHECKPOINT_LEDGER.json"
+    if ledger.exists():
+        try:
+            rt = json.loads(ledger.read_text()).get("request_type")
+            if isinstance(rt, str) and rt.strip():
+                return rt.strip(), "ledger"
+        except Exception:
+            pass
+    stems = _raw_stems(report_dir)
+    if sum(1 for s in stems if s.endswith("_summary")) >= 2:
+        return "compare", "heuristic"   # 다기업 — 섹터일 수도 있으나 휴리스틱은 구분 불가(보고용)
+    if any(s.startswith("screen") for s in stems):
+        return "screening", "heuristic"
+    return None, "none"
+
+
+def _has(html: str, *terms) -> bool:
+    return any(t in html for t in terms)
+
+
+# 유형별 필수 산출 체크 — 각 predicate(html, report_dir) -> bool (True=충족). 실패 항목당 −5(최대 −15).
+TYPE_RUBRICS = {
+    "compare": [
+        ("compare_grid_or_table", lambda h, d: "compare-grid" in h or h.lower().count("<table") >= 2),
+        ("basis_label", lambda h, d: _has(h, "연결 기준", "별도 기준", "연결기준", "별도기준",
+                                          "연결·별도", "연결재무", "별도재무", "결산월", "결산기")),
+        ("relative_valuation", lambda h, d: _has(h, "상대가치", "상대 밸류", "상대밸류", "밸류에이션 비교",
+                                                "Peer", "peer", "백분위", "percentile", "멀티플 비교")),
+    ],
+    "sector": [
+        ("universe_defined", lambda h, d: _has(h, "유니버스", "universe", "대상 종목", "편입 종목",
+                                               "구성종목", "분석 대상", "모집단")),
+        ("benchmark_series_label", lambda h, d: _has(h, "한국은행", "ECOS", "커버리지", "bottom-up",
+                                                     "자사 집계", "보유 기업")),
+    ],
+    "screening": [
+        ("hygiene_filter", lambda h, d: _has(h, "위생", "이상치", "극단값", "아웃라이어", "outlier",
+                                             "밸류트랩", "value trap", "배제", "정합성", "null")),
+        ("recipe_mention", lambda h, d: _has(h, "레시피", "recipe", "recipes", "검증 레시피")),
+    ],
+}
+_RUBRIC_ALIAS = {"industry_report": "sector", "deep_screening": "screening"}  # 상세 유형 → 상위 루브릭
+
+
+def _backtest_rubric(report_dir: Path, html: str):
+    """quant 백테스트 모드(results.json 존재) 전용 — 게이트 결과 + 한계 고지 검사. 모드 A(results 없음)는 None."""
+    res = report_dir / "_workspace" / "backtest" / "results.json"
+    if not res.exists():
+        return None
+    checks = {"results_json": True}
+    try:
+        gates = json.loads(res.read_text()).get("gates", {})
+        checks["lookahead_zero"] = (gates.get("lookahead_violations") == 0)
+    except Exception:
+        checks["lookahead_zero"] = False
+    checks["limitation_notice"] = _has(html, "EOD", "PIT", "point-in-time", "point in time",
+                                       "KIND", "일별 종가", "공시일", "look-ahead", "생존편향", "survivorship")
+    fails = sum(1 for v in checks.values() if not v)
+    return {"type": "backtest", "checks": checks, "penalty": min(fails * 5, 15)}
+
+
+def apply_type_rubric(report_dir: Path, html: str):
+    """유형별 루브릭 평가 → {type, checks, penalty} 또는 None. penalty는 보고서 품질에서 차감."""
+    bt = _backtest_rubric(report_dir, html)   # results.json 트리거 — 구 런 오탐 없음
+    if bt is not None:
+        return bt
+    rtype, source = detect_request_type(report_dir)
+    if source != "ledger":                    # 구 런/휴리스틱 = 페널티 미적용 (회귀 0 보장)
+        return None
+    rubric = TYPE_RUBRICS.get(_RUBRIC_ALIAS.get(rtype, rtype))
+    if not rubric:                            # quant(모드 A)·single·custom 등 = 페널티 없음
+        return None
+    checks = {name: bool(pred(html, report_dir)) for name, pred in rubric}
+    fails = sum(1 for v in checks.values() if not v)
+    return {"type": _RUBRIC_ALIAS.get(rtype, rtype), "checks": checks, "penalty": min(fails * 5, 15)}
+
+
+# ═══════════════════════════════════════
 # 3. Report Quality (보고서 품질)
 # ═══════════════════════════════════════
 
@@ -368,6 +467,15 @@ def check_report_quality(report_dir: Path) -> dict:
     narrative_score = 10 if result["visible_text_size"] >= 15000 else 0  # 10점 (가시 본문 15KB+, 구 md_score 대체)
     feo_score = 10 if (result["feo_f"] + result["feo_e"] + result["feo_o"]) > 5 else 0  # 10점
     score = round(size_score + section_score + component_score + table_score + narrative_score + feo_score)
+
+    # 유형별 루브릭 — 필수 산출 실패 시 감점 (backtest=results.json 트리거, 그 외 ledger request_type 시).
+    # 충족 시 감점 0 → 현행 완화 유지. 구 런(휴리스틱)은 apply_type_rubric에서 None 반환 → 회귀 0.
+    rubric = apply_type_rubric(report_dir, html)
+    if rubric:
+        result["rubric_type"] = rubric["type"]
+        result["rubric_checks"] = rubric["checks"]
+        result["rubric_penalty"] = rubric["penalty"]
+        score = max(0, score - rubric["penalty"])
 
     result["score"] = score
     result["grade"] = _grade(score)
@@ -658,6 +766,10 @@ def print_report(result: dict, verbose: bool = True):
         feo = rq.get("feo_f", 0) + rq.get("feo_e", 0) + rq.get("feo_o", 0)
         if feo > 0:
             print(f"  ○ F/E/O 라벨: F={rq.get('feo_f',0)} E={rq.get('feo_e',0)} O={rq.get('feo_o',0)}")
+        if rq.get("rubric_type"):
+            fails = [k for k, v in rq.get("rubric_checks", {}).items() if not v]
+            mark = "✓" if not fails else f"⚠ 미충족 {', '.join(fails)} (−{rq.get('rubric_penalty', 0)})"
+            print(f"  ○ {rq['rubric_type']} 루브릭: {mark}")
 
     # API 효율 상세
     ae = r["checks"]["api_efficiency"]

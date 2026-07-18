@@ -2,6 +2,18 @@
 
 규약: 변경 요약을 최신순으로 기록. 동작 변경은 **[BREAKING]**, 문서는 **[DOC]**, 수정은 **[FIX]**.
 
+## v3.1.0 (2026-07-18) — 5 카테고리 라우팅 정합 + 백테스트 로컬 실행 계층(Lv1)
+
+설계 SSOT: hyean `docs/HARNESS_WORKAREAS_20260718.md` (5축 전수조사 — 단일/비교/섹터/스크리닝/백테스트). 로더·스크립트만 변경, 서버 방법론(`mcp_content`)·API는 hyean 리포.
+
+- **[DOC] 요청 분류 결정표 (SKILL §2.3 신설)** — 44행 라우팅 힌트 3줄을 13종 판별 결정표로 확장(요청 신호 + 모호 시 판별 질문). `quant`는 "성과 통계=모드 A / 규칙·기간·리밸런스 명시=모드 B(백테스트)" 구분 명시.
+- **[DOC] 체인 런 규정 (SKILL §2.3)** — 복합 요청("찾아서 비교"·"스크리닝 후 심층")은 선행 유형으로 런 시작 → 같은 RUN_DIR + `get_plan(다음 유형)` 재호출 + `00_raw` 재사용(동일 엔드포인트 재호출 금지) → 최종 index.html 1개, `log_run`/finalize는 최종 유형 1회(`agents`에 `chain:유형1>유형2`).
+- **[NEW] `scripts/backtest_scaffold.py`** — 로컬 규칙 백테스트 실행기(pandas+pyarrow, 네트워크 0). `/datasets`(factor_zoo·pit_universe_snapshot·survivorship_free) + `/prices/bulk` 무가공 저장본을 읽어 **PIT look-ahead 게이트**(as_of_from ≤ 리밸런스일 < as_of_until, 미매칭 셀은 period_end+90일 보수 폴백)·분위 포트·비용 민감도(0/30/60bp)·상폐 청산(마지막 adj_close, −100% 강제 금지)·연도별 분해를 `results.json`+`timeseries.csv`로 산출. 서버는 백테스트를 실행하지 않는다(PRODUCT 정직고지 ②) — 실행 주체=로컬 하네스.
+- **[NEW] 유형별 채점 루브릭 (`report_quality_check.py` TYPE_RUBRICS)** — compare(basis 표기·compare-grid·상대밸류)·sector(유니버스 정의·벤치마크 계열 라벨)·screening(위생 필터·레시피 언급)·backtest(게이트 4종·한계 고지·results.json) 필수 산출을 검사, 실패 시 보고서 품질 감점(항목당 −5, 최대 −15)·충족 시 현행 완화 유지(P5 측정 정합). **유형 감지=ledger `request_type` 우선, 없으면 파일 휴리스틱 폴백.** ★compare/sector/screening 페널티는 ledger request_type 있을 때만·backtest는 results.json 트리거라 **구 런 점수 회귀 0**(harness-dev 69런 전수 무회귀·크래시 0 실측).
+- **[NEW] ledger `request_type` 기록 (`finalize_run.sh --request-type <type>`)** — 채점기 유형 감지의 정본. 인자 없으면 현행과 동일(하위호환).
+- **[DOC] §0 백테스트 경계 갱신** — "자유 백테스트 미지원" → "**서버 실행** 미지원 — `quant` 유형이 `/datasets` 다운로드 + 로컬 실행(`backtest_scaffold.py`)으로 지원". STOP 게이트가 백테스트 요청을 차단하지 않도록(quant 라우팅).
+- **[DOC] design-cheatsheet 비교 4섹션 순서** — 비교표(basis 표기)→각사 재무→상대 밸류에이션→의견.
+
 ## v3.0.6 (2026-07-17) — 공개 릴리스: MIT LICENSE + 히스토리 리셋
 
 - **리포 public 전환** — v3 얇은 로더는 공개 배포 대상 (방법론·데이터는 Hyean MCP 서버가 OAuth·크레딧 뒤에서 서빙).

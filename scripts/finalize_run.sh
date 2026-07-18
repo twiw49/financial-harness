@@ -1,9 +1,18 @@
 #!/bin/bash
 # 런 마무리 헬퍼: ledger + 스냅샷 + session + 워크벤치 정리 + 재채점
-# 사용법(프로젝트 루트에서): bash .claude/skills/financial-harness/scripts/finalize_run.sh <RUN_DIR> "<request>" "<da_note>" "<extra_notes>" "<agent1,agent2,...>"
-#   5번째 인자(사용 에이전트 목록) 생략 시 기존 ledger의 agents[].name에서 유도.
+# 사용법(프로젝트 루트에서): bash .claude/skills/financial-harness/scripts/finalize_run.sh [--request-type <type>] <RUN_DIR> "<request>" "<da_note>" "<extra_notes>" "<agent1,agent2,...>"
+#   --request-type <type>: 선택. ledger에 request_type 기록 → 채점기가 유형별 루브릭 적용. 생략 시 현행과 동일(하위호환).
+#   5번째 위치 인자(사용 에이전트 목록) 생략 시 기존 ledger의 agents[].name에서 유도.
 #   둘 다 없으면 .claude/agents 전체 복사 + 경고 (이전 런 에이전트 혼입 위험).
 set -e
+# 선행 옵션 파싱 (위치 인자 앞의 --플래그만) — 하위호환: 플래그 없으면 기존 위치 인자 그대로
+REQUEST_TYPE=""
+while [ "${1:0:2}" = "--" ]; do
+  case "$1" in
+    --request-type) REQUEST_TYPE="$2"; shift 2 ;;
+    *) echo "⚠ 알 수 없는 옵션 $1 무시" >&2; shift ;;
+  esac
+done
 RUN="$1"; REQ="$2"; DA="${3:-DA 미발동}"; NOTES="${4:-}"; AGENT_ARG="${5:-}"
 START=$(cat "$RUN/_workspace/.report_start" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.000Z)
 
@@ -35,6 +44,16 @@ json.dump({
  'devils_advocate':{'note':'''$DA'''},
  'report_start':'$START'
 }, open('$RUN/_workspace/CHECKPOINT_LEDGER.json','w'), ensure_ascii=False, indent=1)
+"
+fi
+# request_type 주입 (선택) — 신규/기존 ledger 모두에 멱등 기록. 채점기가 이 키로 유형별 루브릭 적용.
+if [ -n "$REQUEST_TYPE" ] && [ -f "$RUN/_workspace/CHECKPOINT_LEDGER.json" ]; then
+python3 -c "
+import json
+p='$RUN/_workspace/CHECKPOINT_LEDGER.json'
+d=json.load(open(p)); d['request_type']='$REQUEST_TYPE'
+json.dump(d, open(p,'w'), ensure_ascii=False, indent=1)
+print('request_type:', '$REQUEST_TYPE')
 "
 fi
 # .report_end는 최초 finalize 시점 고정 (재실행 시 세션 필터 범위 보존)
