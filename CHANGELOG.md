@@ -11,6 +11,7 @@ known-시점 판정에서 **② pit original 앵커를 삭제**해 ①`known_fro
 - **[BREAKING] 구버전 8컬럼 factor_zoo 지원 종료** — `known_from` 컬럼 부재 시 침묵 하위호환 대신 **경고(stderr) + 전량 ③ 법정 lag 처리** + 재다운로드 안내. ② 폴백 경로가 사라져 known-시점이 전량 보수적 lag가 됨을 명시(침묵 금지).
 - **[COMPAT] gates 필드명 전부 유지** — `known_from_cells`(①)·`fallback_lag_cells`(③)·`anchor_coverage_pct`(분자=① `known_from`)·`restated_value_risk_cells`(restatement_events 기준)·`lookahead_violations`(=0 의무)·`forward_signal_rows_dropped`. 제거는 ② 내부 카운터(`anchor_cells`)·pit 로드/앵커 코드·콘솔 출력의 `anchor=` 토큰뿐.
 - forward 드롭(`period_type=='forward'`)·정정 리스크 게이트(`exclude_restated`)·상폐 청산·look-ahead 자기검증(=0) 유지. config 스키마·results.json 게이트 키 불변.
+- **[검수 보강] restated 게이트 null semantics** — `restatement_events` 미제공 런(+25cr 패널 미다운로드, 기본 50cr 플로우)은 `restated_value_risk_cells`/`restated_cells_excluded`를 **null(측정 안 함)**로 기록 + stderr 경고. 0("리스크 없음")과의 오독 차단 — 픽스처 2종(유/무) 재검증, lookahead=0.
 
 ## v3.1.2 (2026-07-18) — 백테스트 known_from 컬럼 1순위 소비 (factor_zoo v2)
 

@@ -224,6 +224,10 @@ def main():
     if len(reb) < 2:
         sys.exit("리밸런스 날짜 < 2 — 가격 데이터/기간 확인")
     exclude_restated = bool(cfg["exclude_restated"])
+    restated_available = ds["restatement_events"] is not None
+    if not restated_available:
+        print("⚠️ restatement_events 미제공 — 정정 리스크 게이트 측정 안 함(보고서에 null로 기록). "
+              "다운로드(+25cr) 시 restated_value_risk_cells 활성.", file=sys.stderr)
     restated_set = build_restated_set(ds["restatement_events"])
     sig_idx, forward_dropped = build_signal_index(ds["factor_zoo"], restated_set,
                                                   [s["item_id"] for s in signals], consol, cfg["period_type"])
@@ -333,8 +337,9 @@ def main():
             "fallback_lag_cells": fallback_cells,
             "known_from_cells": known_from_cells,
             "anchor_coverage_pct": _r(date_anchored / total_known * 100, 2) if total_known else None,
-            "restated_value_risk_cells": len(used_restated),
-            "restated_cells_excluded": len(excluded_restated),
+            # None = restatement_events 미제공(+25cr 패널) — "측정 안 함"을 0("리스크 없음")과 구분
+            "restated_value_risk_cells": len(used_restated) if restated_available else None,
+            "restated_cells_excluded": len(excluded_restated) if restated_available else None,
             "forward_signal_rows_dropped": forward_dropped,
             "delisted_included": bool(fixed_codes is None and surv is not None),
             "liquidation_assumption": f"상폐 종목은 상폐일 마지막 adj_close로 청산(−100% 강제 안 함). "
