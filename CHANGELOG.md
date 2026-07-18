@@ -2,6 +2,15 @@
 
 규약: 변경 요약을 최신순으로 기록. 동작 변경은 **[BREAKING]**, 문서는 **[DOC]**, 수정은 **[FIX]**.
 
+## v3.1.2 (2026-07-18) — 백테스트 known_from 컬럼 1순위 소비 (factor_zoo v2)
+
+파이프라인 근본수정 반영: `factor_zoo.parquet`에 `known_from`(원본 정기보고서 제출일, string 'YYYY-MM-DD'/null) 컬럼 내장(실측 커버리지 annual 97.5%·ttm 99.9%·quarterly 99.7%·forward=의도적 NULL). `scripts/backtest_scaffold.py`만 변경.
+
+- **[FIX] known-시점 3단계 판정** — ① 팩터 행 `known_from` 컬럼(non-null이면 그 날짜, **1순위**) ② 부재/null이면 pit `original` 앵커 ③ 둘 다 없으면 period_type 법정 lag. 종전(v3.1.1)은 ②③만 — 겹침 1종(DRV_DPS)이라 폴백 지배적이던 것을 팩터 내장 제출일로 해소.
+- **[COMPAT] 구버전 8컬럼 parquet 하위호환** — `known_from` 컬럼 존재 여부로 분기(`has_kf`). 컬럼 없으면 종전 ②/③ 경로로 동일 동작(known_from_cells=0).
+- **[NEW] `gates.known_from_cells`** — ①로 판정된 셀 수. `anchor_coverage_pct` 분자를 **①+②**(실제 날짜 앵커) 합으로 갱신 — ①/②/③ 구성이 보이도록. 기존 `lookahead_violations`(=0 의무)·`fallback_lag_cells`(=③) 필드명 유지.
+- forward 드롭(`period_type=='forward'`, `known_from` NULL이어도 1차 방어)·정정 리스크 게이트(`exclude_restated`)·look-ahead 자기검증(=0) 유지.
+
 ## v3.1.1 (2026-07-18) — 백테스트 PIT 앵커 정밀화 (제출일 앵커·법정 lag·정정 리스크·forward 금지)
 
 `scripts/backtest_scaffold.py`만 변경. 근거 실측: pit↔factor_zoo canonical 겹침이 1종(DRV_DPS)뿐이라 종전 90d 단일 폴백이 지배적 → known-시점 판정을 "원본 제출일 앵커"로 교체.

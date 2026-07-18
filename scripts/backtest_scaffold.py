@@ -108,12 +108,17 @@ def build_pit_maps(pit):
 
 
 def build_signal_index(factor_zoo, pit_anchor, pit_restated, item_ids, consol, period_type):
-    """시그널 항목별: corp→[(pe, pe_str, value, known_ts, used_fallback, is_restated)] pe desc. + forward 드롭 수.
-    known_ts = ① 원본 제출일 앵커 ② period_type 법정 lag 폴백. forward(모델 최신 산출=vintage 아님)는 금지."""
+    """시그널 항목별: corp→[(pe, pe_str, value, known_ts, source, is_restated)] pe desc. + forward 드롭 수.
+    known_ts 3단계: ① 팩터 행 known_from 컬럼(factor_zoo v2, 원본 정기보고서 제출일) ② pit original 앵커
+    ③ period_type 법정 lag. 구버전 8컬럼 parquet은 known_from 부재 → ②/③로 하위호환.
+    forward(모델 최신 산출=vintage 아님)는 컬럼이 NULL이어도 1차 드롭."""
     sig = factor_zoo[(factor_zoo["item_id"].isin(item_ids)) & (factor_zoo["consol"] == consol)].copy()
     forward_dropped = int((sig["period_type"] == "forward").sum())
     sig = sig[(sig["period_type"] != "forward") & (sig["period_type"] == period_type)].copy()
     sig["pe"] = pd.to_datetime(sig["period_end"], errors="coerce")
+    has_kf = "known_from" in sig.columns          # 구버전(8컬럼) 하위호환 분기
+    if has_kf:
+        sig["kf"] = pd.to_datetime(sig["known_from"], errors="coerce")
     lag = pd.Timedelta(days=LEGAL_LAG.get(period_type, 90))
     idx = {}
     for item in item_ids:
@@ -124,13 +129,20 @@ def build_signal_index(factor_zoo, pit_anchor, pit_restated, item_ids, consol, p
         by_corp = {}
         for cc, g in sub.groupby("corp_code"):
             cells = []
-            for pe, val in zip(g["pe"], g["value"].astype(float)):
+            kfs = g["kf"] if has_kf else [pd.NaT] * len(g)
+            for pe, val, kf in zip(g["pe"], g["value"].astype(float), kfs):
                 if pd.isna(pe):
                     continue
                 ps = pe.strftime("%Y-%m-%d")
-                a = pit_anchor.get((cc, ps))
-                kt, fb = (a, False) if a is not None else (pe + lag, True)
-                cells.append((pe, ps, val, kt, fb, (cc, ps) in pit_restated))
+                if pd.notna(kf):                              # ① 팩터 행 known_from (1순위)
+                    kt, source = kf, "known_from"
+                else:
+                    a = pit_anchor.get((cc, ps))
+                    if a is not None:                         # ② pit original 앵커
+                        kt, source = a, "anchor"
+                    else:                                     # ③ 법정 lag
+                        kt, source = pe + lag, "lag"
+                cells.append((pe, ps, val, kt, source, (cc, ps) in pit_restated))
             by_corp[cc] = cells
         idx[item] = by_corp
     return idx, forward_dropped
@@ -138,16 +150,16 @@ def build_signal_index(factor_zoo, pit_anchor, pit_restated, item_ids, consol, p
 
 def signal_at(cells, t, exclude_restated):
     """(corp cells, t) → t 시점 알려졌던 최신 period_end 값. exclude_restated면 정정 리스크 셀 드롭 후 다음 후보.
-    → (value, known_ts, used_fallback, pe_str, is_restated, excluded_pes)."""
+    → (value, known_ts, source, pe_str, is_restated, excluded_pes). source ∈ {known_from, anchor, lag}."""
     excluded = []
-    for pe, ps, val, kt, fb, is_rest in cells:   # pe 내림차순
+    for pe, ps, val, kt, source, is_rest in cells:   # pe 내림차순
         if kt > t:
             continue                              # 아직 안 알려짐 (제외 아님)
         if exclude_restated and is_rest:
             excluded.append(ps)                   # 알려졌으나 정정 리스크 → 드롭, 다음 후보로
             continue
-        return val, kt, fb, ps, is_rest, excluded
-    return None, None, False, None, False, excluded
+        return val, kt, source, ps, is_rest, excluded
+    return None, None, None, None, False, excluded
 
 
 # ── 수익률 ────────────────────────────────────────────────────────────────────
@@ -218,7 +230,7 @@ def main():
                                                   [s["item_id"] for s in signals], consol, cfg["period_type"])
     fixed_codes = set(cfg["universe"].get("codes", [])) if cfg["universe"].get("type") == "codes" else None
 
-    lookahead_violations = anchor_cells = fallback_cells = liquidations = skipped_periods = 0
+    lookahead_violations = known_from_cells = anchor_cells = fallback_cells = liquidations = skipped_periods = 0
     used_restated: set = set()      # (corp, item, pe) 실제 사용된 정정 리스크 셀
     excluded_restated: set = set()  # (corp, item, pe) exclude_restated로 드롭된 셀
     prev_members: dict = {}         # quantile → set(corp)  (회전율 계산)
@@ -233,7 +245,7 @@ def main():
             vals, ok = {}, True
             for s in signals:
                 item = s["item_id"]
-                v, known, fb, ps, is_rest, excl = signal_at(sig_idx[item].get(cc, ()), t0, exclude_restated)
+                v, known, source, ps, is_rest, excl = signal_at(sig_idx[item].get(cc, ()), t0, exclude_restated)
                 for ep in excl:
                     excluded_restated.add((cc, item, ep))
                 if v is None:
@@ -241,8 +253,12 @@ def main():
                     break
                 if known > t0:                           # 안전 자기검증 — 발생하면 안 됨
                     lookahead_violations += 1
-                anchor_cells += int(not fb)
-                fallback_cells += int(fb)
+                if source == "known_from":               # ① 팩터 행 제출일
+                    known_from_cells += 1
+                elif source == "anchor":                 # ② pit 앵커
+                    anchor_cells += 1
+                else:                                    # ③ 법정 lag
+                    fallback_cells += 1
                 if is_rest:
                     used_restated.add((cc, item, ps))
                 vals[item] = v
@@ -309,6 +325,8 @@ def main():
         row["long_short"] = _r(sum(ls[j] for j in range(len(dates)) if m[j] and ls[j] is not None))
         per_year[str(int(y))] = row
 
+    date_anchored = known_from_cells + anchor_cells   # ①known_from + ②pit앵커 = 실제 날짜 앵커
+    total_known = date_anchored + fallback_cells       # ①+②+③ 전체 채택 셀
     out = run_dir / "_workspace" / "backtest"
     out.mkdir(parents=True, exist_ok=True)
     results = {
@@ -316,8 +334,8 @@ def main():
         "gates": {
             "lookahead_violations": lookahead_violations,
             "fallback_lag_cells": fallback_cells,
-            "anchor_coverage_pct": _r(anchor_cells / (anchor_cells + fallback_cells) * 100, 2)
-                                   if (anchor_cells + fallback_cells) else None,
+            "known_from_cells": known_from_cells,
+            "anchor_coverage_pct": _r(date_anchored / total_known * 100, 2) if total_known else None,
             "restated_value_risk_cells": len(used_restated),
             "restated_cells_excluded": len(excluded_restated),
             "forward_signal_rows_dropped": forward_dropped,
@@ -341,9 +359,9 @@ def main():
     ts["cum_long_short"] = np.cumsum([x or 0 for x in ls])
     ts.to_csv(out / "timeseries.csv", index=False)
 
-    cov = _r(anchor_cells / (anchor_cells + fallback_cells) * 100, 1) if (anchor_cells + fallback_cells) else None
+    cov = _r(date_anchored / total_known * 100, 1) if total_known else None
     print(f"✓ backtest 완료 — periods={len(periods)} lookahead_violations={lookahead_violations} "
-          f"anchor_coverage={cov}% (anchor={anchor_cells}/fallback={fallback_cells}) "
+          f"anchor_coverage={cov}% (known_from={known_from_cells}/anchor={anchor_cells}/lag={fallback_cells}) "
           f"restated_risk={len(used_restated)} excluded={len(excluded_restated)} "
           f"forward_dropped={forward_dropped} liquidations={liquidations}")
     print(f"  results.json + timeseries.csv → {out}")
