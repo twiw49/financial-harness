@@ -2,6 +2,17 @@
 
 규약: 변경 요약을 최신순으로 기록. 동작 변경은 **[BREAKING]**, 문서는 **[DOC]**, 수정은 **[FIX]**.
 
+## v3.2.0 (2026-07-18) — forward_vintage 패널 소비 (forward 팩터 백테스트의 유일한 합법 입구)
+
+백테스트 스캐폴드가 신규 `forward_vintage.parquet`(datasets 6번째)을 소비 — **forward 팩터를 모드 B에서 look-ahead 없이 검증하는 유일한 합법 경로**. 패널의 **행 자체가 vintage**라(anchor_date = 그 값이 알려진 시점: A=연간보고서 제출일·P=잠정공시일·E=업종평균 공표일) known_from/법정 lag 판정이 불필요하다. `scripts/backtest_scaffold.py`만 변경. factor_zoo 경로·기존 게이트는 전부 무변경(회귀 결과 byte-동일, 신규 키 1개만 추가).
+
+- **[NEW] config `signals[].source`** — `"factor_zoo"`(기본, 종전 동작 무변경) · `"forward_vintage"` 신설. 미지 source는 명확한 에러.
+- **[NEW] forward_vintage 시그널 판정** — item_id `FWD_EPS_ENS`(권장 기본)·`FWD_EPS_B/T/R/S` → 각 `fwd_eps_*` 컬럼. 리밸런스일 t에 `anchor_date ≤ t` 중 **최신 anchor_date 행**(동률이면 최신 target_fy) 값 채택(consol 필터). 값 NULL이면 그 시그널 없음 처리(선택된 최신 anchor 기준 — 더 과거 앵커로 폴백 안 함). known_ts=anchor_date라 기존 look-ahead 자기검증(`known > t0`)이 곧 "`anchor_date > t` 채택 없음" 검증이 되어 `lookahead_violations`에 합산.
+- **[NEW] `gates.forward_vintage_cells`** — 채택된 vintage 셀 수. 기존 게이트 필드·factor_zoo 경로 로직은 전부 무변경(`anchor_coverage_pct`는 factor_zoo known_from 비율 그대로 — vintage 셀 미포함). `forward_signal_rows_dropped`(factor_zoo forward 행 드롭)도 유지 — **vintage 경로만이 forward의 합법 입구**.
+- **[NEW] 데이터 로드·에러** — `00_raw/datasets/forward_vintage.parquet` 로드. forward_vintage 시그널이 있는데 파일 부재 시 명확한 에러(+25cr 다운로드 안내). 미지 item_id·미지 source·consol 미스매치도 명확한 에러.
+- **[COMPAT] factor_zoo 전용 런 무변경** — `source` 미지정 config는 종전과 byte-동일 결과(회귀 픽스처 diff-0, 추가는 `forward_vintage_cells: 0` 키 뿐). factor_zoo 시그널이 없는 순수 vintage 런은 factor_zoo 다운로드 불필요.
+- **[검증]** 실물 forward_vintage.parquet(15,493행) + 합성 가격/유니버스 E2E(vintage=4,005·lookahead=0)·회귀 diff-0·혼합 런(known_from=4,005·vintage=4,005 동시 집계·forward_dropped=45)·선택 로직 유닛(최신 anchor·tie-break·NULL-latest 드롭·future-anchor 필터·consol 필터) 전부 통과.
+
 ## v3.1.3 (2026-07-18) — 백테스트 known-시점 2단계 간소화 + 정정 리스크셋 restatement_events 전환 (pit 의존 소멸)
 
 known-시점 판정에서 **② pit original 앵커를 삭제**해 ①`known_from` → ③법정 lag **2단계**로 축소하고, 정정 리스크셋 소스를 pit `generation='restated'`에서 `restatement_events.parquet`으로 전환. 데이터 의존이 `pit_universe_snapshot`을 잃어 **factor_zoo·survivorship_free·restatement_events·prices 4종**으로 정리(look-ahead 판정에 pit 불필요 → 모드 B 기본 다운로드 25cr 절감). `scripts/backtest_scaffold.py`만 변경.

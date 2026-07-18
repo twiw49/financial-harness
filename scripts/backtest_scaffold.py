@@ -24,6 +24,9 @@ PPY = {"M": 12, "Q": 4}  # 리밸런스 빈도별 연간 기간 수
 LEGAL_LAG = {"annual": 90, "quarterly": 45, "ttm": 45, "declared": 45}
 DEFAULTS = {"consol": 1, "rebalance": "M", "quantiles": 5, "cost_bps": 30, "period_type": "annual",
             "period": {}, "trials_note": "", "exclude_restated": False}
+# forward_vintage 패널(datasets 6번째) 시그널 item_id → fwd_eps_* 컬럼. 행 자체가 vintage(anchor_date=known-시점).
+FWD_VINTAGE_COLS = {"FWD_EPS_ENS": "fwd_eps_ens", "FWD_EPS_B": "fwd_eps_b", "FWD_EPS_T": "fwd_eps_t",
+                    "FWD_EPS_R": "fwd_eps_r", "FWD_EPS_S": "fwd_eps_s"}
 
 
 # ── 입력 로드 ─────────────────────────────────────────────────────────────────
@@ -40,7 +43,7 @@ def load_config(run_dir: Path) -> dict:
 def load_datasets(run_dir: Path) -> dict:
     base = run_dir / "_workspace" / "00_raw" / "datasets"
     return {k: (pd.read_parquet(base / f"{k}.parquet") if (base / f"{k}.parquet").exists() else None)
-            for k in ("factor_zoo", "survivorship_free_universe", "restatement_events")}
+            for k in ("factor_zoo", "survivorship_free_universe", "restatement_events", "forward_vintage")}
 
 
 def load_prices(run_dir: Path) -> dict:
@@ -147,9 +150,39 @@ def build_signal_index(factor_zoo, restated_set, item_ids, consol, period_type):
     return idx, forward_dropped
 
 
+def build_vintage_index(fv, item_ids, consol):
+    """forward_vintage 패널 → 시그널 항목별 corp→[(anchor, label, value, anchor, 'vintage', False)] anchor 내림차순.
+    ★행 자체가 vintage — anchor_date가 그 값이 알려진 시점(A=연간보고서 제출·P=잠정공시·E=업종평균 공표)이므로
+    known_from/법정 lag가 불필요하다(anchor_date가 곧 판정 기준). 리밸런스일 t에 anchor_date ≤ t 중 최신 anchor
+    행(동률이면 최신 target_fy) 채택 — signal_at이 anchor 내림차순 셀의 첫 kt≤t를 반환하므로 그 규약을 그대로 재사용.
+    known_ts=anchor라 signal_at→main의 자기검증(known>t0)이 곧 'anchor_date > t 채택 없음' 검증(lookahead_violations).
+    값 NULL이면 그 시그널 없음 처리(선택된 최신 anchor 행 기준 — 더 과거 앵커로 폴백하지 않음, 기존 규약과 동일)."""
+    sub = fv[fv["consol"] == consol].copy()
+    if sub.empty:
+        sys.exit(f"forward_vintage: consol={consol} 행 0 — 패널은 consol=1(연결) 기준")
+    sub["anchor"] = pd.to_datetime(sub["anchor_date"], errors="coerce")
+    sub = sub.sort_values(["anchor", "target_fy"], ascending=False)   # 최신 anchor·동률 최신 target_fy 우선
+    idx = {}
+    for item in item_ids:
+        col = FWD_VINTAGE_COLS.get(item)
+        if col is None:
+            sys.exit(f"forward_vintage signal '{item}' 미지 item_id — 지원: {', '.join(FWD_VINTAGE_COLS)}")
+        by_corp = {}
+        for cc, g in sub.assign(_v=pd.to_numeric(sub[col], errors="coerce")).groupby("corp_code", sort=False):
+            cells = []
+            for anchor, val in zip(g["anchor"], g["_v"]):
+                if pd.isna(anchor):
+                    continue
+                cells.append((anchor, anchor.strftime("%Y-%m-%d"), None if pd.isna(val) else float(val),
+                              anchor, "vintage", False))
+            by_corp[cc] = cells
+        idx[item] = by_corp
+    return idx
+
+
 def signal_at(cells, t, exclude_restated):
     """(corp cells, t) → t 시점 알려졌던 최신 period_end 값. exclude_restated면 정정 리스크 셀 드롭 후 다음 후보.
-    → (value, known_ts, source, pe_str, is_restated, excluded_pes). source ∈ {known_from, lag}."""
+    → (value, known_ts, source, pe_str, is_restated, excluded_pes). source ∈ {known_from, lag, vintage}."""
     excluded = []
     for pe, ps, val, kt, source, is_rest in cells:   # pe 내림차순
         if kt > t:
@@ -205,8 +238,8 @@ def main():
     cfg = load_config(run_dir)
     ds = load_datasets(run_dir)
     prices = load_prices(run_dir)
-    if ds["factor_zoo"] is None or not prices:
-        sys.exit("factor_zoo.parquet 또는 prices_bulk_*.json 누락 — /datasets 다운로드·/prices/bulk 수집 확인")
+    if not prices:
+        sys.exit("prices_bulk_*.json 누락 — /prices/bulk 수집 확인")
 
     signals = cfg["signals"]
     consol, Q, freq = cfg["consol"], int(cfg["quantiles"]), cfg["rebalance"]
@@ -229,11 +262,31 @@ def main():
         print("⚠️ restatement_events 미제공 — 정정 리스크 게이트 측정 안 함(보고서에 null로 기록). "
               "다운로드(+25cr) 시 restated_value_risk_cells 활성.", file=sys.stderr)
     restated_set = build_restated_set(ds["restatement_events"])
-    sig_idx, forward_dropped = build_signal_index(ds["factor_zoo"], restated_set,
-                                                  [s["item_id"] for s in signals], consol, cfg["period_type"])
+    fz_items, fv_items = [], []                     # 시그널 소스 분리: factor_zoo(기본) vs forward_vintage
+    for s in signals:
+        src = s.get("source", "factor_zoo")
+        if src == "factor_zoo":
+            fz_items.append(s["item_id"])
+        elif src == "forward_vintage":
+            fv_items.append(s["item_id"])
+        else:
+            sys.exit(f"signal '{s['item_id']}' 미지 source='{src}' — 지원: factor_zoo, forward_vintage")
+    sig_idx: dict = {}
+    forward_dropped = 0
+    if fz_items:
+        if ds["factor_zoo"] is None:
+            sys.exit("factor_zoo.parquet 누락 — /api/datasets/factor_zoo/download(25cr) 수집 확인")
+        idx_fz, forward_dropped = build_signal_index(ds["factor_zoo"], restated_set,
+                                                     fz_items, consol, cfg["period_type"])
+        sig_idx.update(idx_fz)
+    if fv_items:                                     # forward 팩터의 유일한 합법 입구(factor_zoo forward 행은 계속 드롭)
+        if ds["forward_vintage"] is None:
+            sys.exit("forward_vintage.parquet 누락 — forward 팩터 백테스트는 이 패널이 유일한 합법 입구. "
+                     "/api/datasets/forward_vintage/download(+25cr) 수집 확인")
+        sig_idx.update(build_vintage_index(ds["forward_vintage"], fv_items, consol))
     fixed_codes = set(cfg["universe"].get("codes", [])) if cfg["universe"].get("type") == "codes" else None
 
-    lookahead_violations = known_from_cells = fallback_cells = liquidations = skipped_periods = 0
+    lookahead_violations = known_from_cells = fallback_cells = forward_vintage_cells = liquidations = skipped_periods = 0
     used_restated: set = set()      # (corp, item, pe) 실제 사용된 정정 리스크 셀
     excluded_restated: set = set()  # (corp, item, pe) exclude_restated로 드롭된 셀
     prev_members: dict = {}         # quantile → set(corp)  (회전율 계산)
@@ -258,6 +311,8 @@ def main():
                     lookahead_violations += 1
                 if source == "known_from":               # ① 팩터 행 제출일
                     known_from_cells += 1
+                elif source == "vintage":                # forward_vintage 앵커 셀(anchor_date=known-시점)
+                    forward_vintage_cells += 1
                 else:                                    # ③ 법정 lag
                     fallback_cells += 1
                 if is_rest:
@@ -336,6 +391,7 @@ def main():
             "lookahead_violations": lookahead_violations,
             "fallback_lag_cells": fallback_cells,
             "known_from_cells": known_from_cells,
+            "forward_vintage_cells": forward_vintage_cells,
             "anchor_coverage_pct": _r(date_anchored / total_known * 100, 2) if total_known else None,
             # None = restatement_events 미제공(+25cr 패널) — "측정 안 함"을 0("리스크 없음")과 구분
             "restated_value_risk_cells": len(used_restated) if restated_available else None,
@@ -364,6 +420,7 @@ def main():
     cov = _r(date_anchored / total_known * 100, 1) if total_known else None
     print(f"✓ backtest 완료 — periods={len(periods)} lookahead_violations={lookahead_violations} "
           f"anchor_coverage={cov}% (known_from={known_from_cells}/lag={fallback_cells}) "
+          f"vintage={forward_vintage_cells} "
           f"restated_risk={len(used_restated)} excluded={len(excluded_restated)} "
           f"forward_dropped={forward_dropped} liquidations={liquidations}")
     print(f"  results.json + timeseries.csv → {out}")
