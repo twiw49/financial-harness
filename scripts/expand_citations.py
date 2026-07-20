@@ -34,6 +34,7 @@ description 등)를 조회해 report-template.md §4 규격의 완전한
 import datetime
 import html
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -170,6 +171,29 @@ def load_records(raw: Path):
                                           "field": field, "as_of": str(as_of)},
                     }, None, cc)
 
+        # 분기 단독 실적 인덱싱 — summary.quarterly의 각 항목을 {ITEM}_Q 레코드로.
+        # ratios/financials는 TTM·연간이라 같은 period_end라도 분기 단독값과 충돌한다
+        # (예: DRV_OP_MARGIN @2026-03-31 = 24.24% TTM vs 분기 42.75%). 분기값을 별도
+        # 네임스페이스로 citable하게 만들어, 라이터가 분기값을 화면에 쓰고도 TTM 토큰밖에
+        # 못 걸어 '표시값≠data-value'가 강제되던 근본 결함을 해소한다.
+        q = d.get("quarterly")
+        if isinstance(q, list) and cc:
+            add_cc(cc)
+            for row in q:
+                if not isinstance(row, dict):
+                    continue
+                qper = str(row.get("period_end") or row.get("period") or "")[:10]
+                if not qper:
+                    continue
+                for k, v in row.items():
+                    if k in ("period_end", "period", "consol") or not isinstance(v, (int, float)):
+                        continue
+                    base_label = (item_meta.get(k, {}) or {}).get("label_ko") or k
+                    put({"item_id": f"{k}_Q", "period": qper, "value": v,
+                         "confidence": "high", "label_ko": f"{base_label}(분기)",
+                         "source_anchor": {"dataset": "summary_quarterly", "period_end": qper}},
+                        d.get("consol"), cc)
+
         # 밸류에이션 모델값 합성 — valuation.json의 방법별 적정가·범위·시나리오·Forward EPS를
         # VAL_* 레코드로. 플랜이 valuation을 적정가 '1차 출처'로 규정하는데 인용 id가 없어
         # 원문 링크 없는 estimate span으로 열화되던 갭 해소 (RETRO 002 C-3).
@@ -259,6 +283,57 @@ def fmt_value(v):
     return f"{n:,.0f}"
 
 
+_RANGE_CHARS = ("~", "∼", "±", "—", "–", "…", "→", "/")
+
+
+def _disp_number(disp):
+    """disp 문자열에서 대표 숫자(콤마 제거한 bare 값)와 퍼센트여부를 추출.
+    범위·복수숫자·비수치는 None(판단 보류) — 오탐 방지. 단위(조/억/백만)는
+    곱하지 않고 _value_mismatch의 10의거듭제곱 정합으로 흡수한다(백만↔만 오인 방지)."""
+    if not disp or any(ch in disp for ch in _RANGE_CHARS):
+        return None
+    m = re.search(r"-?\d[\d,]*\.?\d*", disp)
+    if not m:
+        return None
+    try:
+        return float(m.group(0).replace(",", "")), ("%" in disp)
+    except ValueError:
+        return None
+
+
+def _value_mismatch(disp, val) -> bool:
+    """화면 표시숫자(disp)와 resolve된 data-value(val)가 의미상 다른 수량이면 True.
+    같은 수치의 단위 표기차(조/억/백만/천/만 생략, 예 '7.98'=7.98조)는 정합으로 통과 —
+    disp/val 비율이 10의 거듭제곱(exp 0 또는 |exp|≥3)에 근접하면 스케일 표기로 간주.
+    §1 분기 OPM 42.75% ↔ TTM 24.24%(1.76배), §8 정상화 PER 2.71 ↔ raw 38.72(0.07배)처럼
+    거듭제곱이 아닌 배율만 배선 불일치로 포착."""
+    p = _disp_number(disp)
+    if p is None:
+        return False
+    dnum, _is_pct = p
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return False
+    d, v = abs(dnum), abs(v)
+    if v == 0:
+        return d > 1e-9
+    if d == 0:
+        return v > 1e-9
+    cands = [v]
+    if v <= 1.5:  # 비율 저장(0.108) ↔ 퍼센트 표시(10.8%)
+        cands.append(v * 100.0)
+    for c in cands:
+        if c <= 0:
+            continue
+        e = math.log10(d / c)
+        r = round(e)
+        # exp≈0(같은 스케일) 또는 |exp|≥3(천/만/백만/억/조 단위 생략)이면 같은 수치 표기 → 정합
+        if abs(e - r) < 0.05 and (r == 0 or abs(r) >= 3):
+            return False
+    return True
+
+
 def parse_token(body: str) -> dict:
     """'item=IS_OPR|period=...|disp=...' → dict. disp/text는 마지막에 와도 됨."""
     out = {}
@@ -271,7 +346,7 @@ def parse_token(body: str) -> dict:
     return out
 
 
-def build_hyean(tok, index, corp_codes, item_meta, misses):
+def build_hyean(tok, index, corp_codes, item_meta, misses, warnings=None):
     iid = tok.get("item")
     per = (tok.get("period") or "")[:10]
     consol = tok.get("consol")
@@ -357,6 +432,10 @@ def build_hyean(tok, index, corp_codes, item_meta, misses):
         a.append(f'data-inputs="{esc_json(rec["inputs"])}"')
     if val is not None:
         a.append(f'data-value="{esc(val)}"')
+        # 추적성 게이트: 화면 표시값이 인용 data-value와 의미상 어긋나면 경고.
+        # (분기값을 TTM 토큰에·정상화값을 raw 토큰에 건 경우 → 드로어 클릭 시 다른 숫자)
+        if warnings is not None and tok.get("disp") and _value_mismatch(tok["disp"], val):
+            warnings.append(f"{iid}@{per or '-'}: 표시 '{tok['disp']}' ↔ data-value {val}")
     a.append(f'data-label="{esc(label)}"')
     if desc:
         a.append(f'data-description="{esc(desc)}"')
@@ -407,14 +486,14 @@ def main():
         sys.exit(2)
     index, corp_codes, item_meta = load_records(raw)
     text = html_file.read_text()
-    misses, counts = [], {k: 0 for k in KIND}
+    misses, warnings, counts = [], [], {k: 0 for k in KIND}
 
     def repl(m):
         kind = m.group(1)
         tok = parse_token(m.group(2))
         counts[kind] += 1
         if kind == "h":
-            return build_hyean(tok, index, corp_codes, item_meta, misses)
+            return build_hyean(tok, index, corp_codes, item_meta, misses, warnings)
         if kind == "w":
             return build_web(tok)
         if kind == "e":
@@ -438,12 +517,18 @@ def main():
     print(f"✓ 토큰 확장: {total}개 (hyean {counts['h']} / web {counts['w']} / "
           f"estimate {counts['e']} / audit {counts['a']} / insight {counts['i']} / deep {counts['d']})")
     print(f"  인덱스 적재 레코드: {len(index)} | corp_codes: {', '.join(corp_codes) if corp_codes else '(없음)'}")
+    if warnings:
+        print(f"  ⚠ 표시값≠data-value 의심 {len(warnings)}건 (드로어 클릭 시 화면과 다른 값 — 토큰 기간/종류 교정 필요):")
+        for x in warnings[:20]:
+            print(f"     - {x}")
+        print("     → 분기값은 item=..._Q + period=분기말, 정상화·재계산 값은 {{e|...}}로 인용하라.")
     if misses:
         print(f"  ⚠ hyean JSON 미스 {len(misses)}건 (fallback span 생성, 삭제 안 됨):")
         for x in misses[:20]:
             print(f"     - {x}")
         sys.exit(1)
-    print("  미해결 토큰 0 — 전부 JSON 매칭 성공")
+    print("  미해결 토큰 0 — 전부 JSON 매칭 성공"
+          + (f" (단, 표시값 정합 경고 {len(warnings)}건)" if warnings else ""))
     sys.exit(0)
 
 

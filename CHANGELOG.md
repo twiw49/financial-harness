@@ -2,6 +2,21 @@
 
 규약: 변경 요약을 최신순으로 기록. 동작 변경은 **[BREAKING]**, 문서는 **[DOC]**, 수정은 **[FIX]**.
 
+## v3.3.0 (2026-07-20) — 13 리포트 gap 분석 + 실제 렌더 감사 기반 스타일·추적성 근본수정
+
+financial-harness 13 request_type을 실제 배치 실행→요청 기준(블랙박스) 기대치 대조로 gap을 찾고, 이어 13 리포트를 **Chrome 헤드리스로 실제 렌더**해 여백/패딩/마진/가독성을 시각 감사. 발견된 결함을 전부 **생성기(design-kit·cheatsheet·assemble·expand_citations)** 에서 근본수정 — 개별 리포트는 미수정, 모든 미래 리포트에 자동 적용.
+
+- **[FIX] citation 추적성 게이트** (`expand_citations.py`) — 화면 표시값(disp)과 인용 토큰이 resolve하는 data-value가 어긋나면(드로어 클릭 시 다른 숫자) assemble 시 경고. 분기값을 TTM 토큰에·정상화값을 raw 토큰에 걸던 배선 불일치를 10의거듭제곱 정합으로 판정(단위 표기차는 통과). 5리포트 회귀 실측 17건 포착·오탐 0.
+- **[NEW] 분기 단독 실적 `_Q` 인덱싱** — `summary.quarterly`의 각 항목을 `{ITEM}_Q`(예 `DRV_OP_MARGIN_Q`)로 citable하게. 분기값을 화면에 쓰고도 TTM 토큰밖에 못 걸어 표시값≠data-value가 강제되던 근본 결함 해소.
+- **[NEW] assemble 인라인 `<script>` 문법 검사** (`assemble_report.py`) — `node --check`로 본문 차트 스크립트의 SyntaxError를 조립 시 포착(오타→init 실패→**빈 캔버스**가 되던 클래스, 013 weightDonut). citation 토큰은 치환해 오탐 방지·node 미설치 시 생략.
+- **[FIX] callout 문장 파편화** — `.callout`의 `display:flex`(안 쓰이는 아이콘용) 제거. 문장 속 텍스트·cited 스팬이 개별 flex item으로 조각나 ~87개 callout이 세로 컬럼으로 산산조각 나던 것 → 정상 문단 흐름.
+- **[FIX] verdict-hero 클래스 불일치** — 치트시트 예시가 쓰던 `.vmetric/.vlabel/.vval/.verdict-metrics`가 CSS에 미정의라 라벨/값이 붙던 것(007·013). CSS 별칭 추가 + 치트시트 예시를 정본(`.verdict-grid/.verdict-opinion/.verdict-metric/.verdict-label/.verdict-value`)으로 교체.
+- **[FIX] timeline·heatmap 클래스 배선** — `.tl-*`↔`.timeline-*` 듀얼셀렉터, heatmap grid를 `div.heatmap`로 스코프+`.heatmap.X` 표셀 색(td 왜곡·색 미적용 해소).
+- **[FIX] 반응형·가독성** — 모바일 wide 테이블 가로 스크롤(`@media table`), theme-toggle이 좁은 폭서 h1 가림(→h1 우측 여백), muted 캡션 대비 상향(`--text3`), kpi-grid 고정4열 trailing 빈칸(→auto-fit), next-actions 박스 상단 여백(→first-child margin 리셋), feo-badge 경량화.
+- **[NEW] 시각화 프리미티브** — football-field/밸류에이션 레인지(현재가·목표가 마커, PER/PBR 밴드 겸용)·value-chain 다이어그램(산업 가치사슬). scatter·상관히트맵·이중축·스택 워크드 예시도 cheatsheet 추가.
+- **[DOC] cheatsheet** — 표시값=data-value 정합 규칙(분기 `_Q`·재계산값 `{{e}}`)·유형별 밀도 가이드(scaffold-bleed 방지)·결론(열거형) 카드/리스트 구조 예시·FEO 배지 간결 가이드.
+- 서버 플랜 배선(별도 hyean 리포): single_stock 배당·듀폰, watchlist 수급(웹), screening market 필터, quant 섹터/규모 노출.
+
 ## v3.2.0 (2026-07-18) — forward_vintage 패널 소비 (forward 팩터 백테스트의 유일한 합법 입구)
 
 백테스트 스캐폴드가 신규 `forward_vintage.parquet`(datasets 6번째)을 소비 — **forward 팩터를 모드 B에서 look-ahead 없이 검증하는 유일한 합법 경로**. 패널의 **행 자체가 vintage**라(anchor_date = 그 값이 알려진 시점: A=연간보고서 제출일·P=잠정공시일·E=업종평균 공표일) known_from/법정 lag 판정이 불필요하다. `scripts/backtest_scaffold.py`만 변경. factor_zoo 경로·기존 게이트는 전부 무변경(회귀 결과 byte-동일, 신규 키 1개만 추가).

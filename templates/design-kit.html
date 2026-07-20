@@ -83,7 +83,7 @@
   --border2:  rgba(255,255,255,0.12);
   --text:     #F0F4FF;
   --text2:    #8A96AA;
-  --text3:    #4A5568;
+  --text3:    #6B7688; /* 소형 캡션/서브라벨 대비 상향(구 #4A5568는 다크 배경서 판독 저하) */
   --primary:  #00C2FF;
   --verified: #00E38C;
   --accent3:  #FF6B35;
@@ -130,6 +130,7 @@ h1 {
   letter-spacing: -0.8px;
   margin-bottom: 8px;
   line-height: 1.2;
+  padding-right: 56px; /* 우상단 고정 테마토글(40px+여백)이 좁은 폭에서 제목 끝글자를 덮던 것 방지 */
   background: linear-gradient(135deg, var(--verified), var(--primary));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -710,10 +711,10 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 12px; }
   margin: 16px 0;
   font-size: 13px;
   line-height: 1.7;
-  display: flex;
-  gap: 10px;
 }
-.callout-icon { font-size: 16px; flex-shrink: 0; }
+/* ★ display:flex 금지 — callout은 <strong>제목</strong> + 인라인 텍스트/cited 스팬이 섞인 한 문단이라
+   flex면 각 텍스트 노드·스팬이 개별 flex item으로 쪼개져 문장이 산산조각 난다(가독성 붕괴). 일반 블록 흐름 유지. */
+.callout-icon { font-size: 16px; margin-right: 6px; }
 .callout.info    { background: rgba(0,194,255,0.06); border: 1px solid rgba(0,194,255,0.15); color: var(--primary); }
 .callout.warn    { background: rgba(251,191,36,0.06); border: 1px solid rgba(251,191,36,0.15); color: var(--warn); }
 .callout.success { background: rgba(0,227,140,0.06); border: 1px solid rgba(0,227,140,0.15); color: var(--verified); }
@@ -734,11 +735,11 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 12px; }
   width: 2px;
   background: var(--border2);
 }
-.timeline-item {
+.timeline-item, .tl-item {
   position: relative;
   margin-bottom: 16px;
 }
-.timeline-item::before {
+.timeline-item::before, .tl-item::before {
   content: '';
   position: absolute;
   left: -22px;
@@ -749,13 +750,13 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 12px; }
   background: var(--primary);
   border: 2px solid var(--bg);
 }
-.timeline-item.highlight::before { background: var(--verified); }
-.timeline-date {
+.timeline-item.highlight::before, .tl-item.highlight::before { background: var(--verified); }
+.timeline-date, .tl-date {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text3);
 }
-.timeline-text {
+.timeline-text, .tl-content {
   font-size: 13px;
   color: var(--text2);
   margin-top: 2px;
@@ -819,8 +820,12 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 12px; }
 .ohlcv-stat .stat-change.up { color: var(--danger); }
 .ohlcv-stat .stat-change.down { color: var(--primary); }
 
-/* ═══ COMPONENT: heatmap ═══ 사용: <td class="heatmap hot/warm/cool/cold">값</td> */
-.heatmap { display: grid; gap: 2px; margin: 12px 0; }
+/* ═══ COMPONENT: heatmap ═══
+   그리드형: <div class="heatmap"><div class="heatmap-cell hot">값</div>…</div>
+   표셀형:   <td class="heatmap hot/warm/cool/cold">값</td>  ← table 안에서 grid 미적용(색만)
+   ※ grid는 div.heatmap 컨테이너에만. td/th에 heatmap을 걸어도 셀 레이아웃이 깨지지 않는다. */
+div.heatmap { display: grid; gap: 2px; margin: 12px 0; }
+td.heatmap, th.heatmap { text-align: right; font-family: var(--mono); }
 .heatmap-cell {
   padding: 8px;
   text-align: center;
@@ -829,10 +834,44 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 12px; }
   font-size: 11px;
   font-weight: 600;
 }
-.heatmap-cell.hot  { background: rgba(248,113,113,0.15); color: var(--danger); }
-.heatmap-cell.warm { background: rgba(251,191,36,0.10); color: var(--warn); }
-.heatmap-cell.cool { background: rgba(0,194,255,0.10); color: var(--primary); }
-.heatmap-cell.cold { background: rgba(0,227,140,0.10); color: var(--verified); }
+.heatmap-cell.hot,  .heatmap.hot  { background: rgba(248,113,113,0.15); color: var(--danger); }
+.heatmap-cell.warm, .heatmap.warm { background: rgba(251,191,36,0.10); color: var(--warn); }
+.heatmap-cell.cool, .heatmap.cool { background: rgba(0,194,255,0.10); color: var(--primary); }
+.heatmap-cell.cold, .heatmap.cold { background: rgba(0,227,140,0.10); color: var(--verified); }
+
+/* ═══ COMPONENT: football-field ═══ 방법별 적정가 범위 + 현재가·목표가 마커. PER/PBR 밴드(과거 밴드 vs 현재)에도 재사용.
+   사용: <div class="football-field" style="--min:0;--max:500000;--cur:255000;--tgt:369000">
+           <div class="ff-row"><span class="ff-name">DCF</span><span class="ff-track"><span class="ff-bar" style="--lo:320000;--hi:400000"><b>32~40만</b></span></span></div>
+           …여러 ff-row…
+           <span class="ff-marker ff-cur" data-label="현재 255,000"></span><span class="ff-marker ff-tgt" data-label="목표 369,000"></span>
+         </div>   ※ 값은 전부 unitless 숫자(calc 스케일링). ff-marker는 ff-row들 뒤에 둔다. */
+.football-field { position: relative; margin: 14px 0; padding: 4px 0 22px; }
+.ff-row { position: relative; display: flex; align-items: center; height: 22px; margin: 4px 0; }
+.ff-name { width: 80px; flex: none; font-size: 11px; font-family: var(--mono); color: var(--text2); text-align: right; padding-right: 8px; }
+.ff-track { position: relative; flex: 1; height: 14px; background: var(--bg2); border-radius: 7px; }
+.ff-bar {
+  position: absolute; top: 0; bottom: 0; border-radius: 7px;
+  background: linear-gradient(90deg, rgba(0,194,255,0.30), rgba(0,194,255,0.60));
+  left: calc((var(--lo) - var(--min)) / (var(--max) - var(--min)) * 100%);
+  right: calc((var(--max) - var(--hi)) / (var(--max) - var(--min)) * 100%);
+}
+.ff-bar b { position: absolute; left: 50%; top: -1px; transform: translateX(-50%); font-size: 9px; color: var(--text); white-space: nowrap; }
+.ff-marker { position: absolute; top: 0; bottom: 20px; width: 2px; z-index: 3; }
+.ff-marker::after { content: attr(data-label); position: absolute; bottom: -18px; left: 50%; transform: translateX(-50%); font-size: 9px; white-space: nowrap; font-family: var(--mono); }
+.ff-cur { background: var(--text3); left: calc(88px + (var(--cur) - var(--min)) / (var(--max) - var(--min)) * (100% - 88px)); }
+.ff-cur::after { color: var(--text3); }
+.ff-tgt { background: var(--verified); left: calc(88px + (var(--tgt) - var(--min)) / (var(--max) - var(--min)) * (100% - 88px)); }
+.ff-tgt::after { color: var(--verified); }
+
+/* ═══ COMPONENT: value-chain ═══ 산업 가치사슬 흐름도(소재→부품→장비→IDM). 개별사 아닌 산업 구조 시각화.
+   사용: <div class="value-chain"><div class="vc-stage"><div class="vc-title">소재</div><div class="vc-body">동진·솔브레인</div></div><div class="vc-arrow"></div><div class="vc-stage">…</div></div> */
+.value-chain { display: flex; align-items: stretch; flex-wrap: wrap; margin: 14px 0; }
+.vc-stage { flex: 1; min-width: 120px; background: var(--bg2); border: 1px solid var(--border2); border-radius: 8px; padding: 10px; }
+.vc-title { font-size: 12px; font-weight: 600; color: var(--primary); margin-bottom: 4px; }
+.vc-body { font-size: 11px; color: var(--text2); line-height: 1.4; }
+.vc-arrow { flex: none; align-self: center; width: 22px; text-align: center; color: var(--text3); }
+.vc-arrow::before { content: '→'; font-size: 16px; }
+@media (max-width: 640px) { .value-chain { flex-direction: column; } .vc-arrow::before { content: '↓'; } }
 
 /* ═══ COMPONENT: feo-legend ═══ 사용: <div class="feo-legend">...</div> — 접기/펼치기 범례 박스 (보고서 상단) */
 .feo-legend {
@@ -1140,26 +1179,29 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 12px; }
 .verdict-opinion.buy .verdict-value  { color: var(--verified); }
 .verdict-opinion.hold .verdict-value { color: var(--warn); }
 .verdict-opinion.sell .verdict-value { color: var(--danger); }
-.verdict-label {
+/* .vlabel/.vval/.vmetric/.verdict-metrics = 별칭 — 구버전 치트시트 예시가 쓰던 클래스도 스타일 받게.
+   미정의 시 라벨·값이 간격 0으로 붙어버리던 버그(007·013 verdict 히어로) 근본 차단. 정본은 .verdict-*. */
+.verdict-metrics { display: flex; flex-wrap: wrap; gap: 20px; }
+.verdict-label, .vlabel {
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--text3);
 }
-.verdict-metric {
+.verdict-metric, .vmetric {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.verdict-metric .verdict-value {
+.verdict-metric .verdict-value, .vmetric .vval {
   font-family: var(--mono);
   font-size: 24px;
   font-weight: 700;
   color: var(--text);
 }
-.verdict-metric .verdict-value.positive { color: var(--verified); }
-.verdict-metric .verdict-value.negative { color: var(--danger); }
+.verdict-metric .verdict-value.positive, .vmetric .vval.positive { color: var(--verified); }
+.verdict-metric .verdict-value.negative, .vmetric .vval.negative { color: var(--danger); }
 .verdict-detail {
   font-size: 13px;
   color: var(--text2);
@@ -1237,7 +1279,7 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 12px; }
 */
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); /* 타일 수에 맞춰 채움 — 고정 4열서 6·5타일이 남던 trailing 빈칸 방지(6타일도 한 줄) */
   gap: 12px;
   margin: 20px 0;
 }
@@ -1337,6 +1379,9 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 12px; }
   border: 1px solid var(--border);
   border-radius: 14px;
 }
+/* 박스 첫 자식(라이터가 .next-actions-title 대신 bare <h3>를 넣으면 h3 기본 margin-top이
+   padding 위에 더해져 제목 위 ~75px 빈 공간이 생기던 것) margin-top 제거. card/insight/callout도 동일 방어. */
+.next-actions > :first-child, .card > :first-child, .insight-card > :first-child, .callout > :first-child { margin-top: 0; }
 .next-actions-title {
   font-size: 15px;
   font-weight: 700;
@@ -1730,7 +1775,7 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 12px; }
 .term-tip:hover .tip-text { display: block; }
 .term-tip .tip-text::after { content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 6px solid transparent; border-top-color: var(--bg2); }
 
-.feo-badge { font-size: 0.85em; padding: 1px 5px; border-radius: 4px; cursor: help; position: relative; }
+.feo-badge { font-size: 0.75em; padding: 0 4px; border-radius: 4px; cursor: help; position: relative; vertical-align: 0.08em; opacity: 0.92; }
 .feo-badge.fact { background: rgba(0,227,140,0.15); color: var(--verified); }
 .feo-badge.estimate { background: rgba(0,194,255,0.15); color: var(--primary); }
 .feo-badge.opinion { background: rgba(251,191,36,0.15); color: var(--warn); }
@@ -1906,6 +1951,9 @@ tr[data-confidence="low"] { opacity: 0.75; }
   .next-actions-grid { grid-template-columns: 1fr; }
   .confidence-meter { flex-wrap: wrap; }
   .meter-label { width: auto; }
+  /* ★ wide 테이블: 좁은 화면에서 페이지를 가로로 밀지 않고 셀 내부에서 스크롤(bare <table>도 자동).
+     라이터가 .table-scroll로 감싸지 않아 발생하던 가로 overflow(예: 6열 민감도표) 근본 차단. */
+  .report-container table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; width: max-content; }
   /* Card components: tighter padding */
   .card { padding: 14px 16px; }
   .insight-card { padding: 12px 14px; }

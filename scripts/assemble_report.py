@@ -22,12 +22,45 @@ Citation Drawer/Interactive/TOC)를 자동으로 감싸 완전한 index.html을 
   · 차트는 <canvas id="..."> + 인라인 <script>new Chart(...)</script>로 본문에 포함 가능.
 """
 import argparse
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import sys
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 KIT = SKILL_DIR / "templates" / "design-kit.html"
+
+
+def check_inline_scripts(body: str):
+    """본문 인라인 <script>의 JS 문법을 node --check로 검사.
+    inline Chart.js 오타(예: 군더더기 ']')가 SyntaxError를 내면 차트 init이 조용히 실패해
+    **빈 캔버스**가 되던 클래스(013 weightDonut)를 조립 시점에 포착한다.
+    반환: (errors[(hint, msg)], checked: bool). node 미설치면 checked=False(검사 생략)."""
+    scripts = re.findall(r"<script>(.*?)</script>", body, re.S)  # 인라인만(src= 있는 것은 매칭 안 됨)
+    if not scripts:
+        return [], True
+    node = shutil.which("node")
+    if not node:
+        return [], False
+    errors = []
+    for idx, js in enumerate(scripts):
+        js_clean = re.sub(r"\{\{.*?\}\}", "0", js, flags=re.S)  # citation 토큰은 0으로 치환(문법 오탐 방지)
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as tf:
+            tf.write(js_clean)
+            path = tf.name
+        try:
+            r = subprocess.run([node, "--check", path], capture_output=True, text=True, timeout=15)
+            if r.returncode != 0:
+                idm = re.search(r"getElementById\(['\"]([^'\"]+)", js)
+                hint = idm.group(1) if idm else f"script#{idx + 1}"
+                errline = next((l.strip() for l in r.stderr.splitlines() if "Error" in l), "SyntaxError")
+                errors.append((hint, errline))
+        finally:
+            os.unlink(path)
+    return errors, True
 
 
 def extract_blocks(kit_html: str):
@@ -94,6 +127,15 @@ def main():
     out_file.write_text(assemble(args.title, body, kit_html))
     style_kb = len(re.search(r"<style>.*?</style>", kit_html, re.S).group(0)) / 1024
     print(f"✓ 조립 완료: {out_file} ({out_file.stat().st_size/1024:.0f}KB, CSS {style_kb:.0f}KB 인라인)")
+
+    # 인라인 <script> 문법 검사 — 빈 차트(오타로 init 실패) 조립 시 포착
+    js_errors, checked = check_inline_scripts(body)
+    if js_errors:
+        print(f"  ⚠ 인라인 <script> 문법 오류 {len(js_errors)}건 → 해당 차트가 **빈 캔버스**로 뜬다. 반드시 수정:")
+        for hint, msg in js_errors:
+            print(f"     - {hint}: {msg}")
+    elif not checked and re.search(r"<script>", body):
+        print("  (node 미설치 — 인라인 스크립트 문법 검사 생략)")
 
     if args.no_expand:
         print("  (--no-expand: citation 토큰 미확장)")
