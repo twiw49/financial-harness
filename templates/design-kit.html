@@ -1160,7 +1160,7 @@ td.heatmap, th.heatmap { text-align: right; font-family: var(--mono); }
   position: relative;
   z-index: 1;
 }
-.verdict-opinion {
+.verdict-opinion, .verdict-badge {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1246,6 +1246,9 @@ td.heatmap, th.heatmap { text-align: right; font-family: var(--mono); }
   transition: width 0.6s ease;
 }
 .meter-fill.coverage { background: linear-gradient(90deg, var(--primary), var(--verified)); }
+/* .cm-fill = 별칭 — 구버전 치트시트가 .meter-track 없이 .confidence-meter>.cm-fill로 쓰던 신뢰도 바.
+   미정의 시 confidence 바가 비가시(§3 dd 히어로 근본버그). 정본은 .meter-track>.meter-fill. */
+.cm-fill { height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--verified), var(--primary)); align-self: center; }
 .meter-value {
   font-family: var(--mono);
   font-size: 12px;
@@ -2081,7 +2084,10 @@ tr[data-confidence="low"] { opacity: 0.75; }
     tabs.querySelectorAll('.tab-btn').forEach(function(b){ b.classList.remove('active'); });
     tabs.querySelectorAll('.tab-panel').forEach(function(p){ p.classList.remove('active'); });
     btn.classList.add('active');
-    var panel = tabs.querySelector('.tab-panel[data-tab="'+target+'"]');
+    // 패널 식별: 카탈로그/치트시트는 panel을 id로 문서화(id="t1"), data-tab도 허용 — 둘 다 폴백해 "클릭 후 blank" 차단.
+    var panel = tabs.querySelector('.tab-panel[data-tab="'+target+'"]')
+             || tabs.querySelector('.tab-panel[id="'+target+'"]')
+             || document.getElementById(target);
     if(panel) panel.classList.add('active');
   });
 

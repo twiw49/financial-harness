@@ -2,6 +2,18 @@
 
 규약: 변경 요약을 최신순으로 기록. 동작 변경은 **[BREAKING]**, 문서는 **[DOC]**, 수정은 **[FIX]**.
 
+## v3.5.0 (2026-07-21) — Round 2 gap 분석 반영: design-kit 계약·as-of 라벨링·유형별 시각화 근본수정
+
+7개 완성 리포트(single_stock·event·dd·compare·sector·industry·quant)를 블랙박스로 재채점(6B+1A−)해 **품질 상한을 B로 캡하던 8종 반복 구조적 갭**을 생성기 근본수정으로 잇는다. 크럭스(SOTP 이중계산·주체분리·정상화 비교·진입장벽 WHY·성과귀속)는 대부분 통과 — 감점은 체계적 결손에 집중.
+
+- **[FIX] design-kit 계약 불일치 (비가시·blank 렌더)** — ①cheatsheet가 문서화하던 `.cm-fill`이 CSS 미정의 → confidence 바 비가시. cheatsheet를 정본 `.meter-track>.meter-fill`로 교정 + design-kit에 `.cm-fill`·`.verdict-badge` 방어 별칭. ②탭 JS가 패널을 `[data-tab]`로만 셀렉트했으나 카탈로그·cheatsheet는 `id`로 문서화 → "클릭 후 blank". JS에 `id` 폴백 추가. (※timeline `.tl-*`은 별칭 정의 실재 — 위양성, 무변경.)
+- **[DOC] as-of·기준·라벨 무라벨 혼용 금지 (블랙박스 최다 감점 6/7)** — 동일 표·행의 배수·시총·수익률·순차입은 단일 price-date 또는 기준 라벨; fwd/trailing·연결/지배·협의/광의 접미; Beta 창무관이면 "정적 Beta". cheatsheet 규칙 + single_stock·compare·dd 플랜 배선 + _validation 게이트.
+- **[DOC] tie-out (파생↔자기 차트/표)** — 헤드라인·KPI 파생값(수익률·MDD·ROE·순차입 부호)이 원천 차트/표와 부호·크기 일치, 재구성↔implied ≥3%p면 "정합" 금지.
+- **[DOC] 이질 스케일 한 축 금지** — PER·%·조원을 한 막대축에 얹지 말고 정규화/분리패널/보조축; 매출·이익 이중축은 이익=마진%(선).
+- **[DOC] drawdown/underwater 레시피 신설** + equity curve 벤치 오버레이(quant 모드A). football-field·value-chain은 실재했으나 미사용(usage 갭) → single_stock·industry 플랜에서 호출 의무화.
+- **[DOC] 명시제외(밸류/추천) 유출 가드** — event·industry·dd·portfolio·screening에서 peer 밸류매트릭스·개별종목 fair value/타깃가 금지(산업 집계 1개만).
+- **[DOC] 유형별 필수 슬롯** — dd(RP 양방향·감사인 보수/ICFR·focus축 차트), industry(정책 driver 커버리지·사이클 시계열), sector(수주잔고 as-of·벤치 2계열 라벨), quant(산정규약 5필드: 주기·rf·총수익/가격수익·벤치·수정주가).
+
 ## v3.4.0 (2026-07-20) — request_type 13→11종: deep_screening·watchlist_brief 통합 + sector↔industry_report 경계 명확화
 
 reportType 13종을 전수 대조(플랜 본문·수집셋·에이전트·채점 루브릭)해 중복을 정리. **채점기 `_RUBRIC_ALIAS`가 이미 `deep_screening→screening`·`industry_report→sector`를 같은 루브릭에 매핑**하던 것이 결정적 신호였다.
