@@ -2,6 +2,15 @@
 
 규약: 변경 요약을 최신순으로 기록. 동작 변경은 **[BREAKING]**, 문서는 **[DOC]**, 수정은 **[FIX]**.
 
+## v3.4.0 (2026-07-20) — request_type 13→11종: deep_screening·watchlist_brief 통합 + sector↔industry_report 경계 명확화
+
+reportType 13종을 전수 대조(플랜 본문·수집셋·에이전트·채점 루브릭)해 중복을 정리. **채점기 `_RUBRIC_ALIAS`가 이미 `deep_screening→screening`·`industry_report→sector`를 같은 루브릭에 매핑**하던 것이 결정적 신호였다.
+
+- **[BREAKING] `deep_screening` 제거 → screening 체인으로 통합** — 플랜 본문이 곧 `screening + single_stock` 합성("1단계 스크리닝 / 2단계 Top-N에 single_stock 6콜")이고 고유 api_calls가 없어 **체인 런(§A.8) + 종목당 1에이전트 병렬(§A.1.6)** 이 이미 무손실로 대체. "스크리닝 후 상위 심층" 요청이 결정표(단일유형)와 체인 절 **양쪽에 존재하던 라우터 이중경로(실질 버그)** 해소. 서버 `REQUEST_TYPES` enum·`get_plan` docstring·plans 짝(md+meta)·`screening.md`/`_base.md` 재요청 문구·`_RUBRIC_ALIAS`·SKILL 결정표·cheatsheet 밀도목록 전 지점 제거. 유일 고유 기여(발굴+Top-N 병렬 fan-out)는 screening 규약·_base A.8에 흡수.
+- **[BREAKING] `watchlist_brief` 제거 → `portfolio` 2모드로 통합** — 두 유형은 입력(보유/관심 종목 리스트 corp_code ±가중치)이 동일하고 차이는 깊이·시점뿐이라 모드 분기로 무손실 통합: **진단(full)**=노출(`/portfolio/exposure`)·상관·리스크 깊은 스냅샷(구 portfolio) + `_state` baseline 기록, **브리핑(delta)**=`_state` 대비 material 변동만(구 watchlist_brief, 수급 웹델타 포함). _state 없으면 진단 모드로 자동 전환. 상태 디렉토리 `watchlist/`→`portfolio/`. hyean-web이 portfolio 표면을 다이어트 삭제한 것과 정합(제품 단순화). 서버 enum·docstring·plans 짝·custom 패밀리 목록·SKILL 결정표·cheatsheet 밀도목록 전 지점 반영. `/portfolio/exposure` API 엔드포인트는 유지(진단 모드가 소비).
+- **[DOC] sector↔industry_report 경계 결정론화** — 판별 기준을 **"산출물에 종목 추천(Top Pick)이 있는가?"** 단일 테스트로: 있으면 `sector`, 순수 산업 구조(추천 0)면 `industry_report`. 두 유형은 데이터 수집이 거의 같으나 산출물 계약이 달라(추천 vs 구조 서술) **존치** — 채점은 계속 상위 루브릭(sector) 공유.
+- request_type 11종: single_stock · event_interpretation · dd · compare · sector · industry_report · screening · quant · **portfolio(진단·브리핑)** · macro · custom.
+
 ## v3.3.0 (2026-07-20) — 13 리포트 gap 분석 + 실제 렌더 감사 기반 스타일·추적성 근본수정
 
 financial-harness 13 request_type을 실제 배치 실행→요청 기준(블랙박스) 기대치 대조로 gap을 찾고, 이어 13 리포트를 **Chrome 헤드리스로 실제 렌더**해 여백/패딩/마진/가독성을 시각 감사. 발견된 결함을 전부 **생성기(design-kit·cheatsheet·assemble·expand_citations)** 에서 근본수정 — 개별 리포트는 미수정, 모든 미래 리포트에 자동 적용.

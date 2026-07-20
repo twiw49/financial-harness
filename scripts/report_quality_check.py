@@ -369,7 +369,7 @@ TYPE_RUBRICS = {
         ("recipe_mention", lambda h, d: _has(h, "레시피", "recipe", "recipes", "검증 레시피")),
     ],
 }
-_RUBRIC_ALIAS = {"industry_report": "sector", "deep_screening": "screening"}  # 상세 유형 → 상위 루브릭
+_RUBRIC_ALIAS = {"industry_report": "sector"}  # 상세 유형 → 상위 루브릭 (deep_screening은 2026-07-20 체인으로 통합·제거)
 
 
 def _backtest_rubric(report_dir: Path, html: str):
