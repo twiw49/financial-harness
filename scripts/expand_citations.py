@@ -148,6 +148,27 @@ def load_records(raw: Path):
                 if isinstance(r, dict):
                     put(r, consol, cc)
 
+        # 매크로 시계열 인덱싱 — /api/macro/timeseries 저장 포맷
+        # {canonical_id, values:[{period_end, value, unit}], source, ...}. corp 개념이 없어
+        # bare (iid, per[, consol]) 키로 등록한다 (매크로 런은 corp_codes가 비어
+        # build_hyean이 bare 키로 조회). 미등록 시 {{h|item=ECOS_*}} 전건 json-miss 열화.
+        if isinstance(d.get("canonical_id"), str) and isinstance(d.get("values"), list):
+            iid = d["canonical_id"]
+            anchor = {"dataset": iid, "source": d.get("source"),
+                      "period_type": d.get("period_type"),
+                      "last_updated": d.get("last_updated")}
+            for r in d["values"]:
+                if not isinstance(r, dict) or r.get("period_end") is None:
+                    continue
+                per = str(r["period_end"])[:10]
+                norm = {"item_id": iid, "period_end": per, "corp_code": None,
+                        "value": r.get("value"), "confidence": "high",
+                        "source_type": "official", "label_ko": iid,
+                        "source_anchor": {**anchor, "unit": r.get("unit")},
+                        "consol": None}
+                for key in [(iid, per), (iid, per, None)]:
+                    index.setdefault(key, norm)
+
         # 주가통계 자동 합성 — summary include=price_stats / price_stats.json의
         # {period: {field: value}}를 PS_{PERIOD}_{FIELD} 레코드로. report-writer가
         # *_psupp.json을 수작업 합성하던 반복(054/055/056)을 제거한다.
@@ -310,7 +331,7 @@ def _value_mismatch(disp, val) -> bool:
     p = _disp_number(disp)
     if p is None:
         return False
-    dnum, _is_pct = p
+    dnum, is_pct = p
     try:
         v = float(val)
     except (TypeError, ValueError):
@@ -328,8 +349,10 @@ def _value_mismatch(disp, val) -> bool:
             continue
         e = math.log10(d / c)
         r = round(e)
-        # exp≈0(같은 스케일) 또는 |exp|≥3(천/만/백만/억/조 단위 생략)이면 같은 수치 표기 → 정합
-        if abs(e - r) < 0.05 and (r == 0 or abs(r) >= 3):
+        # exp≈0(같은 스케일)이면 정합. |exp|≥3(천/만/백만/억/조 단위 생략)은 금액에만 허용 —
+        # %값엔 단위 생략이 없어 1000× 어긋남은 자릿수 손상 신호다
+        # (§7 위양성: payout _original 85.38% ↔ 표시 0.09% = 10³이 단위생략 관용으로 통과했던 구멍).
+        if abs(e - r) < 0.05 and (r == 0 or (not is_pct and abs(r) >= 3)):
             return False
     return True
 
@@ -373,9 +396,10 @@ def build_hyean(tok, index, corp_codes, item_meta, misses, warnings=None):
                     break
             if rec:
                 break
-    if rec is None and iid and iid.split("_", 1)[0] in ("PS", "MKT", "VAL"):
+    if rec is None and iid and iid.split("_", 1)[0] in ("PS", "MKT", "VAL", "ECOS"):
         # 시장통계·모델값은 as_of 스냅샷 1개뿐 — 합성 레코드의 기간 키(as_of/data_to)를
         # writer가 알 수 없으므로 (corp, item)만으로 최신 레코드 매칭 (RETRO 002 C-2: PS_ 전건 미해결)
+        # ECOS 매크로 시계열도 동일: 기간 미지정/불일치 토큰은 최신 관측치로 해석
         allowed = {c for c in cc_list if c}
         best = None
         for r in index.values():

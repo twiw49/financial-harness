@@ -2,6 +2,16 @@
 
 규약: 변경 요약을 최신순으로 기록. 동작 변경은 **[BREAKING]**, 문서는 **[DOC]**, 수정은 **[FIX]**.
 
+## v3.6.0 (2026-07-21) — Round 2 2차 웨이브(W1~W4): citation-provenance·viz-usage·헤드리스 로버스트니스
+
+v3.5.0 적용 재생성분 재채점(1A+2A−+4B, 원래 1A−+6B 대비 상향)에서 **계산형 tie-out은 해소됐으나 인용·요약·차트-사용·데이터소스에 잔존하던 3클래스(W1~W3) + custom 헤드리스 차단(W4)**을 근본수정.
+
+- **[FIX] % 자릿수 관용 제거** (`expand_citations.py` `_value_mismatch`) — 표시값↔data-value 게이트의 `|exp|≥3` 배율 관용(조/억 단위 생략용)이 **%값에는 성립하지 않는데 적용**돼 1000× 자릿수 손상(payout _original 85.38% ↔ 표시 0.09%)이 "천 단위 표기차"로 통과하던 구멍을 봉쇄 — %표시는 ×100(비율↔퍼센트)만 허용. 회귀 테스트 8케이스.
+- **[NEW] ECOS 매크로 시계열 citation 인덱싱** (`expand_citations.py`) — `/api/macro/timeseries` 저장 포맷(`canonical_id`+`values[]`)을 bare 키로 인덱싱 + `ECOS_*` 최신 관측치 폴백. macro 런의 `{{h|item=ECOS_*}}`가 전건 json-miss로 열화되던 갭 해소(스킬 사본에만 있던 WIP를 상류 포팅).
+- **[DOC] cheatsheet 3규칙** — ①%지표 자릿수 어긋남=토큰 미스가 아니라 데이터 손상 신호(분자÷분모 재구성 검증) ②동일 라벨=동일 산식(분모까지 단일 정의 — 총환원율 ÷순이익 vs ÷시총 라벨 분리) ③요약·알림↔카드/표 대조 + 미보유 데이터 침묵 금지.
+- **[DOC] SKILL §0.5 헤드리스 규약** — 비대화형(`claude -p`·CI) 실행에서 질문-종료 금지: 권장 기본값 채택+가정 명시, 데이터 부재 시 best-available(범위 축소·하이브리드 소싱)로 산출물 완성. 산출물 0 종료가 실패. **+분기 고지 의무(W4c)**: 채택한 기본값이 요청 문언의 다른 해석을 배제하면 그 분기·사유를 1줄 고지(조용한 치환 금지 — §14 실증: 5회 실패하던 자사주 event-study가 이 규약으로 첫 완주·tie-out 30건 0실패, 유일 감점이 분기 미고지).
+- 서버 플랜 배선(별도 hyean 리포, content 2026.07.21-2): per-type 필수 시각(macro 팬차트·히트맵·캘린더 / screening 조건 산점 / portfolio 브리핑 변동률 막대 / single_stock 배당 focus 스택·커버리지), screening straddle 게이트(_original 기준 판정+자릿수 재구성), custom 횡단면 이벤트 유니버스 라우팅(`/events/search`·`/events/trajectory`)+하이브리드 폴백+autonomous 규약, _validation 2행(요약↔카드·필수 시각 usage).
+
 ## v3.5.0 (2026-07-21) — Round 2 gap 분석 반영: design-kit 계약·as-of 라벨링·유형별 시각화 근본수정
 
 7개 완성 리포트(single_stock·event·dd·compare·sector·industry·quant)를 블랙박스로 재채점(6B+1A−)해 **품질 상한을 B로 캡하던 8종 반복 구조적 갭**을 생성기 근본수정으로 잇는다. 크럭스(SOTP 이중계산·주체분리·정상화 비교·진입장벽 WHY·성과귀속)는 대부분 통과 — 감점은 체계적 결손에 집중.
