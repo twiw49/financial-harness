@@ -305,6 +305,9 @@ def fmt_value(v):
 
 
 _RANGE_CHARS = ("~", "∼", "±", "—", "–", "…", "→", "/")
+_NUM_RE = re.compile(r"-?\d[\d,]*\.?\d*")
+# 숫자 제거 후 residual에서 벗겨낼 단위·통화·기호 (남으면 프로즈로 간주)
+_UNIT_STRIP = re.compile(r"[\s%.,·년월일원조억만천백달분배倍좌pxXbP()\[\]±+\-−~〜$￦€£¥]")
 
 
 def _disp_number(disp):
@@ -313,11 +316,14 @@ def _disp_number(disp):
     곱하지 않고 _value_mismatch의 10의거듭제곱 정합으로 흡수한다(백만↔만 오인 방지)."""
     if not disp or any(ch in disp for ch in _RANGE_CHARS):
         return None
-    m = re.search(r"-?\d[\d,]*\.?\d*", disp)
-    if not m:
+    nums = _NUM_RE.findall(disp)
+    if len(nums) != 1:  # 복수숫자·숫자없음 → 보류 (docstring 계약 이행 — 복합 표시 오탐 차단)
+        return None
+    residual = _UNIT_STRIP.sub("", _NUM_RE.sub("", disp))
+    if re.search(r"[A-Za-z가-힣]", residual):  # 단위/기호 벗긴 뒤 문자 잔존 = 프로즈 → 보류
         return None
     try:
-        return float(m.group(0).replace(",", "")), ("%" in disp)
+        return float(nums[0].replace(",", "")), ("%" in disp)
     except ValueError:
         return None
 
@@ -342,7 +348,7 @@ def _value_mismatch(disp, val) -> bool:
     if d == 0:
         return v > 1e-9
     cands = [v]
-    if v <= 1.5:  # 비율 저장(0.108) ↔ 퍼센트 표시(10.8%)
+    if is_pct or v <= 1.5:  # 퍼센트 표시는 항상 비율 저장 후보(454.1% ↔ 4.541); 소비율(0.108 ↔ 10.8%)
         cands.append(v * 100.0)
     for c in cands:
         if c <= 0:
@@ -357,6 +363,34 @@ def _value_mismatch(disp, val) -> bool:
     return True
 
 
+def _pct_scale_corruption(disp, val) -> bool:
+    """퍼센트 표시가 data-value와 clean 10^k(|k|≥2)로 어긋남 = 자릿수 손상.
+    %엔 조/억/만 같은 단위 생략이 없으므로 100× 이상 차이는 정합이 아니라 손상이다
+    (§7 payout 85.38% ↔ 표시 0.09% 클래스). _value_mismatch 발화분 중 이 클래스만
+    하드 게이트(exit1) — 나머지 불일치(기간/기준 혼동 등)는 soft 경고로 남긴다."""
+    p = _disp_number(disp)
+    if p is None:
+        return False
+    d, is_pct = p
+    if not is_pct:
+        return False
+    try:
+        v = abs(float(val))
+    except (TypeError, ValueError):
+        return False
+    d = abs(d)
+    if d == 0 or v == 0:
+        return False
+    for c in (v, v * 100.0):  # ×1(같은 값) 또는 ×100(비율 저장)으로 정합되면 손상 아님
+        if c <= 0:
+            continue
+        e = math.log10(d / c)
+        if abs(e - round(e)) < 0.05 and round(e) == 0:
+            return False
+    e = math.log10(d / v)
+    return abs(e - round(e)) < 0.05 and abs(round(e)) >= 2
+
+
 def parse_token(body: str) -> dict:
     """'item=IS_OPR|period=...|disp=...' → dict. disp/text는 마지막에 와도 됨."""
     out = {}
@@ -369,7 +403,7 @@ def parse_token(body: str) -> dict:
     return out
 
 
-def build_hyean(tok, index, corp_codes, item_meta, misses, warnings=None):
+def build_hyean(tok, index, corp_codes, item_meta, misses, warnings=None, hard=None):
     iid = tok.get("item")
     per = (tok.get("period") or "")[:10]
     consol = tok.get("consol")
@@ -459,7 +493,11 @@ def build_hyean(tok, index, corp_codes, item_meta, misses, warnings=None):
         # 추적성 게이트: 화면 표시값이 인용 data-value와 의미상 어긋나면 경고.
         # (분기값을 TTM 토큰에·정상화값을 raw 토큰에 건 경우 → 드로어 클릭 시 다른 숫자)
         if warnings is not None and tok.get("disp") and _value_mismatch(tok["disp"], val):
-            warnings.append(f"{iid}@{per or '-'}: 표시 '{tok['disp']}' ↔ data-value {val}")
+            msg = f"{iid}@{per or '-'}: 표시 '{tok['disp']}' ↔ data-value {val}"
+            if hard is not None and _pct_scale_corruption(tok["disp"], val):
+                hard.append(msg)  # % 자릿수 손상 → 하드 게이트
+            else:
+                warnings.append(msg)  # 기간/기준 혼동 등 → soft 경고
     a.append(f'data-label="{esc(label)}"')
     if desc:
         a.append(f'data-description="{esc(desc)}"')
@@ -510,14 +548,14 @@ def main():
         sys.exit(2)
     index, corp_codes, item_meta = load_records(raw)
     text = html_file.read_text()
-    misses, warnings, counts = [], [], {k: 0 for k in KIND}
+    misses, warnings, hard, counts = [], [], [], {k: 0 for k in KIND}
 
     def repl(m):
         kind = m.group(1)
         tok = parse_token(m.group(2))
         counts[kind] += 1
         if kind == "h":
-            return build_hyean(tok, index, corp_codes, item_meta, misses, warnings)
+            return build_hyean(tok, index, corp_codes, item_meta, misses, warnings, hard)
         if kind == "w":
             return build_web(tok)
         if kind == "e":
@@ -541,6 +579,11 @@ def main():
     print(f"✓ 토큰 확장: {total}개 (hyean {counts['h']} / web {counts['w']} / "
           f"estimate {counts['e']} / audit {counts['a']} / insight {counts['i']} / deep {counts['d']})")
     print(f"  인덱스 적재 레코드: {len(index)} | corp_codes: {', '.join(corp_codes) if corp_codes else '(없음)'}")
+    if hard:
+        print(f"  ✗ 표시값 자릿수 손상 {len(hard)}건 (퍼센트가 data-value와 100× 이상 어긋남 — 게이트 실패):")
+        for x in hard[:20]:
+            print(f"     - {x}")
+        print("     → %값엔 조/억/만 단위생략이 없다. 비율저장·분기·정상화 혼동 또는 데이터 손상 — 인용 교정 필수.")
     if warnings:
         print(f"  ⚠ 표시값≠data-value 의심 {len(warnings)}건 (드로어 클릭 시 화면과 다른 값 — 토큰 기간/종류 교정 필요):")
         for x in warnings[:20]:
@@ -550,6 +593,7 @@ def main():
         print(f"  ⚠ hyean JSON 미스 {len(misses)}건 (fallback span 생성, 삭제 안 됨):")
         for x in misses[:20]:
             print(f"     - {x}")
+    if misses or hard:
         sys.exit(1)
     print("  미해결 토큰 0 — 전부 JSON 매칭 성공"
           + (f" (단, 표시값 정합 경고 {len(warnings)}건)" if warnings else ""))

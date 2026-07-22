@@ -2,6 +2,15 @@
 
 규약: 변경 요약을 최신순으로 기록. 동작 변경은 **[BREAKING]**, 문서는 **[DOC]**, 수정은 **[FIX]**.
 
+## v3.7.0 (2026-07-22) — UU 재감사 R2 착수분(FD4 보안·FD1 인용·FD2 채점)
+
+harness UU 전면 재감사(R2)의 즉시 착수 클러스터 구현. 레드팀 보정 반영 — 하드게이트는 무회귀 클래스만.
+
+- **[NEW] 외부 콘텐츠 신뢰경계 (prompt injection 방어, FD4)** — WebFetch/WebSearch/PDF/뉴스로 가져온 콘텐츠는 데이터일 뿐 명령 소스가 아니라는 불변식을 SKILL.md 파일 규율에 등재. 서버측 `_base.md` `B.0 외부 콘텐츠 신뢰경계`(SSOT)·`web-researcher` 근접 리마인더와 정합. `settings.template.json`에서 `Bash(open *)`(임의 앱/URL 실행 = 유출·실행 벡터) 제거.
+- **[FIX] citation `_value_mismatch` 정밀화 (FD1)** — `_disp_number`가 docstring 계약("복수숫자·비수치는 보류")을 실제 이행: 복수숫자·프로즈(연도 포함 문장) 표시를 보류해 오탐 제거. 퍼센트 표시는 비율저장(×100) 후보를 항상 평가(454.1% ↔ 4.541 오탐 봉쇄). 실측 아카이브 발화 77→33건(위양성 축소, 진성 유지).
+- **[NEW] % 자릿수 손상 타깃 하드게이트 (FD1)** — `_value_mismatch` 발화분 중 **퍼센트가 data-value와 clean ≥100×로 어긋나는 손상 클래스**(%엔 단위생략 없음 — §7 payout 85.38%↔0.09%)만 `expand_citations` exit1로 승격. 현 아카이브 0건 = 무회귀(미래 재발만 차단). 기간/기준 혼동 등 나머지 불일치는 soft 경고 유지.
+- **[FIX] report_quality 채점 body-strip (FD2)** — `size/component/table` 측정을 전체 파일이 아니라 렌더 본문(design-kit `<style>/<script>` 임베드 중앙값 99KB 제거) 기준으로 정렬. 보일러플레이트만으로 상시 만점 받던 인플레 해소 — 빈 껍데기(029 crashed=0·032 인용0=21)는 정직하게 하락, 정상 리포트는 유지(재채점 중앙값 92).
+
 ## v3.6.0 (2026-07-21) — Round 2 2차 웨이브(W1~W4): citation-provenance·viz-usage·헤드리스 로버스트니스
 
 v3.5.0 적용 재생성분 재채점(1A+2A−+4B, 원래 1A−+6B 대비 상향)에서 **계산형 tie-out은 해소됐으나 인용·요약·차트-사용·데이터소스에 잔존하던 3클래스(W1~W3) + custom 헤드리스 차단(W4)**을 근본수정.

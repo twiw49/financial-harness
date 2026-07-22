@@ -14,7 +14,6 @@
       "Bash(cat *)",
       "Bash(ls *)",
       "Bash(bash .claude/skills/financial-harness/scripts/*)",
-      "Bash(open *)",
       "WebFetch(*)",
       "WebSearch(*)",
       "Read(*)",

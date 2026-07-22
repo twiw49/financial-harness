@@ -425,29 +425,34 @@ def check_report_quality(report_dir: Path) -> dict:
         return result
 
     html = html_path.read_text(errors="replace")
+    # 렌더 본문 = design-kit <style>/<script> 임베드(중앙값 99KB 보일러플레이트 + 컴포넌트 클래스 정의
+    # + <table 리터럴)를 제거한 실체. size/component/table를 전체 파일로 재면 이 임베드가 콘텐츠 무관
+    # 상시 만점을 만든다 → 측정 대상을 body로 정렬(citation_coverage가 이미 쓰는 원칙과 동일).
+    body = re.sub(r"<style>.*?</style>|<script>.*?</script>", "", html, flags=re.S)
+    result["body_size"] = len(body)
 
     # 섹션 수 (h2 태그)
-    sections = re.findall(r"<h2[^>]*>", html, re.IGNORECASE)
+    sections = re.findall(r"<h2[^>]*>", body, re.IGNORECASE)
     result["section_count"] = len(sections)
 
-    # 인터랙티브 컴포넌트 사용
+    # 인터랙티브 컴포넌트 사용 (body에서 — <style>의 클래스 정의가 아니라 실제 인스턴스만)
     components = {
-        "tabs": "tab-btn" in html or "tab-panel" in html,
-        "accordion": "accordion-item" in html,
-        "chart": "chart-wrap" in html or "<canvas" in html,
-        "ohlcv": "ohlcv-wrap" in html,
-        "scenario_bar": "scenario-bar" in html or "scenario-item" in html,
-        "heatmap": "heatmap" in html,
-        "callout": "callout" in html,
-        "timeline": "timeline" in html,
-        "compare_grid": "compare-grid" in html,
-        "stat_card": "stat-card" in html,
+        "tabs": "tab-btn" in body or "tab-panel" in body,
+        "accordion": "accordion-item" in body,
+        "chart": "chart-wrap" in body or "<canvas" in body,
+        "ohlcv": "ohlcv-wrap" in body,
+        "scenario_bar": "scenario-bar" in body or "scenario-item" in body,
+        "heatmap": "heatmap" in body,
+        "callout": "callout" in body,
+        "timeline": "timeline" in body,
+        "compare_grid": "compare-grid" in body,
+        "stat_card": "stat-card" in body,
     }
     result["components_used"] = [k for k, v in components.items() if v]
     result["component_count"] = sum(1 for v in components.values() if v)
 
-    # 테이블 수
-    result["table_count"] = html.lower().count("<table")
+    # 테이블 수 (body에서 — design-kit <style>/<script>의 <table 리터럴 제외)
+    result["table_count"] = body.lower().count("<table")
 
     # F/E/O 라벨링
     result["feo_f"] = html.count('class="feo f"') + html.count("[F,") + html.count("[F]")
@@ -455,12 +460,12 @@ def check_report_quality(report_dir: Path) -> dict:
     result["feo_o"] = html.count('class="feo o"') + html.count("[O,") + html.count("[O]")
 
     # 가시 본문 길이 — 서술 절삭 카나리아 (구 md 동등성 검사 승계, 2026-07-17 md 산출물 폐지)
-    visible = re.sub(r"<style>.*?</style>|<script>.*?</script>", "", html, flags=re.S)
-    visible = re.sub(r"<[^>]+>", "", visible)
+    visible = re.sub(r"<[^>]+>", "", body)
     result["visible_text_size"] = len(visible)
 
-    # 점수 계산
-    size_score = min(result["html_size"] / 60000, 1.0) * 25  # 25점 (60KB 이상)
+    # 점수 계산 — 크기는 body 기준(전체 파일이 아니라 실체). 임베드 99KB가 상시 만점을 만들던 인플레 해소.
+    # 60KB 임계는 body 분포(중앙 84KB)로 재보정: fat 리포트는 유지, thin/빈껍데기만 정직하게 하락.
+    size_score = min(result["body_size"] / 60000, 1.0) * 25  # 25점 (body 60KB 이상)
     section_score = min(len(sections) / 6, 1.0) * 20  # 20점 (6섹션 이상)
     component_score = min(result["component_count"] / 4, 1.0) * 20  # 20점 (4종 이상)
     table_score = min(result["table_count"] / 5, 1.0) * 15  # 15점 (5개 이상)
